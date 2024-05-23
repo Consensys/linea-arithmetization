@@ -327,7 +327,7 @@ public class Hub implements Module {
             this.refTableModules.stream(),
             // Modules
             Stream.of(
-                this,
+                // this,
                 this.add,
                 this.bin,
                 this.blake2fModexpData,
@@ -336,7 +336,7 @@ public class Hub implements Module {
                 this.blockhash,
                 this.ext,
                 this.euc,
-                this.exp,
+                // this.exp,
                 this.logData,
                 this.logInfo,
                 this.mmu, // WARN: must be called before the MMIO

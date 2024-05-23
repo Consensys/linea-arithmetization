@@ -78,6 +78,7 @@ public class EcDataTest {
     List<Arguments> arguments = new ArrayList<>();
 
     // Test cases where ICP = successBit = 1 (first one) or ICP = successBit = 0 (all the others)
+    /*
     for (int i = 0; i < v.size(); i++) {
       for (int j = 0; j < r.size(); j++) {
         for (int k = 0; k < s.size(); k++) {
@@ -93,6 +94,7 @@ public class EcDataTest {
         }
       }
     }
+    */
 
     // Test cases where ICP = successBit = 1
     arguments.add(

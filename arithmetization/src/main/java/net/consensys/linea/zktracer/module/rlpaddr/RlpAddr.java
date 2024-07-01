@@ -47,6 +47,7 @@ import net.consensys.linea.zktracer.module.rlputils.ByteCountAndPowerOutput;
 import net.consensys.linea.zktracer.module.trm.Trm;
 import net.consensys.linea.zktracer.opcode.OpCode;
 import net.consensys.linea.zktracer.types.BitDecOutput;
+import net.consensys.linea.zktracer.types.TransactionProcessingMetadata;
 import net.consensys.linea.zktracer.types.UnsignedByte;
 import org.apache.tuweni.bytes.Bytes;
 import org.apache.tuweni.bytes.Bytes32;
@@ -82,7 +83,8 @@ public class RlpAddr implements Module {
   }
 
   @Override
-  public void traceStartTx(WorldView world, Transaction tx) {
+  public void traceStartTx(WorldView world, TransactionProcessingMetadata txMetaData) {
+    final Transaction tx = txMetaData.getBesuTransaction();
     if (tx.getTo().isEmpty()) {
       final Address senderAddress = tx.getSender();
       final long nonce = tx.getNonce();

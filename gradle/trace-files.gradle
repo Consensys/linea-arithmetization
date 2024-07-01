@@ -32,8 +32,8 @@ tasks.register("hub", TraceFilesTask) {
     dependsOn corsetExists
 
     module = 'hub'
-    files = ['account', 'context', 'shared', 'stack', 'storage', 'transaction', 'scenario', 'miscellaneous']
-            .collect {"hub/columns/${it}.lisp"}
+    files = ['hub/constants.lisp', 'hub/columns/account.lisp', 'hub/columns/context.lisp', 'hub/columns/shared.lisp', 'hub/columns/stack.lisp',
+             'hub/columns/storage.lisp', 'hub/columns/transaction.lisp', 'hub/columns/scenario.lisp', 'hub/columns/miscellaneous.lisp']
 }
 
 //
@@ -106,7 +106,7 @@ tasks.register('binreftable', TraceFilesTask) {
 }
 
 //
-// Put here modules following the conventional MODULE/columns.lisp, MODULE/constants.lisp naming scheme.
+// Shared constants:
 //
 ['constants'].each {moduleName ->
     tasks.register(moduleName, TraceFilesTask) {

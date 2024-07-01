@@ -103,6 +103,10 @@ public class MmuData {
   }
 
   public void setSourceRamBytes() {
+    if (this.mmuCall.sourceRamBytes().isPresent()) {
+      this.sourceRamBytes(this.mmuCall.sourceRamBytes().get());
+      return;
+    }
     final MmuToMmioConstantValues mmuToMmioConstantValues = this.mmuToMmioConstantValues();
 
     final long sourceContextNumber = mmuToMmioConstantValues.sourceContextNumber();
@@ -113,6 +117,10 @@ public class MmuData {
   }
 
   public void setTargetRamBytes() {
+    if (this.mmuCall.targetRamBytes().isPresent()) {
+      this.targetRamBytes(this.mmuCall.targetRamBytes().get());
+      return;
+    }
     final MmuToMmioConstantValues mmuToMmioConstantValues = this.mmuToMmioConstantValues();
 
     final long targetContextNumber = mmuToMmioConstantValues.targetContextNumber();

@@ -15,6 +15,9 @@
 
 package net.consensys.linea.zktracer.types;
 
+import static net.consensys.linea.zktracer.module.constants.GlobalConstants.LLARGE;
+import static net.consensys.linea.zktracer.types.Utils.leftPadTo;
+
 import java.util.List;
 
 import net.consensys.linea.zktracer.module.hub.transients.OperationAncillaries;
@@ -96,9 +99,23 @@ public class AddressUtils {
 
   public static Address getDeploymentAddress(final MessageFrame frame) {
     final OpCode opcode = OpCode.of(frame.getCurrentOperation().getOpcode());
-    if (!opcode.equals(OpCode.CREATE2) && !opcode.equals(OpCode.CREATE)) {
-      throw new IllegalArgumentException("Must be called only for CREATE/CREATE2 opcode");
+    if (opcode.isAnyOf(OpCode.CREATE, OpCode.CREATE2)) {
+      return opcode.equals(OpCode.CREATE) ? getCreateAddress(frame) : getCreate2Address(frame);
     }
-    return opcode.equals(OpCode.CREATE) ? getCreateAddress(frame) : getCreate2Address(frame);
+    throw new IllegalArgumentException("Must be called only for CREATE/CREATE2 opcode");
+  }
+
+  public static Address addressFromBytes(final Bytes input) {
+    return input.size() == Address.SIZE
+        ? Address.wrap(input)
+        : Address.wrap(leftPadTo(input.trimLeadingZeros(), Address.SIZE));
+  }
+
+  public static long highPart(Address address) {
+    return address.slice(0, 4).toLong();
+  }
+
+  public static Bytes lowPart(Address address) {
+    return address.slice(4, LLARGE);
   }
 }

@@ -38,7 +38,7 @@ public class Create2 extends MmuCall implements RomLexDefer {
     this.hub.romLex().createDefers().register(this);
 
     this.sourceId(hub.currentFrame().contextNumber())
-        .auxId(hub.state().stamps().hashInfo())
+        .auxId(hub.state().stamps().hub())
         .sourceOffset(EWord.of(hub.messageFrame().getStackItem(1)))
         .size(Words.clampedToLong(hub.messageFrame().getStackItem(2)))
         .referenceSize(Words.clampedToLong(hub.messageFrame().getStackItem(2)))

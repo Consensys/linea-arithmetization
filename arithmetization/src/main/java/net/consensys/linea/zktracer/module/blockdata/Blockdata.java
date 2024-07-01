@@ -68,7 +68,7 @@ public class Blockdata implements Module {
             currentTimestamp,
             blockHeader.getNumber(),
             blockHeader.getDifficulty().getAsBigInteger(),
-            this.txnData.currentBlock().getTxs().size()));
+            this.txnData.currentBlock().getNbOfTxsInBlock()));
 
     this.batchUnderConstruction = false;
     this.wcp.callGT(currentTimestamp, previousTimestamp);

@@ -93,8 +93,8 @@ public class ScenarioFragment implements TraceFragment, PostTransactionDefer {
             hub.currentFrame().id(),
             hub.callStack().futureId(),
             hub.pch().exceptions().any(),
-            hub.pch().aborts().any(),
-            hub.pch().failures().any(),
+            hub.pch().abortingConditions().any(),
+            hub.pch().failureConditions().any(),
             hub.pch().exceptions().invalidCodePrefix());
     hub.defers().postTx(r);
     return r;
@@ -108,8 +108,8 @@ public class ScenarioFragment implements TraceFragment, PostTransactionDefer {
         hub.currentFrame().id(),
         hub.callStack().futureId(),
         hub.pch().exceptions().any(),
-        hub.pch().aborts().any(),
-        hub.pch().failures().any(),
+        hub.pch().abortingConditions().any(),
+        hub.pch().failureConditions().any(),
         hub.pch().exceptions().invalidCodePrefix());
   }
 
@@ -319,9 +319,9 @@ public class ScenarioFragment implements TraceFragment, PostTransactionDefer {
             precompileCall.map(x -> x.precompile().equals(Precompile.EC_PAIRING)).orElse(false))
         .pScenarioPrcBlake2F(
             precompileCall.map(x -> x.precompile().equals(Precompile.BLAKE2F)).orElse(false))
-        .pScenarioPrcSuccessWillRevert(
+        .pScenarioPrcSuccessCallerWillRevert(
             type.isPrecompile() && successfulPrecompileCall() && callerReverts)
-        .pScenarioPrcSuccessWontRevert(
+        .pScenarioPrcSuccessCallerWontRevert(
             type.isPrecompile() && successfulPrecompileCall() && !callerReverts)
         .pScenarioPrcFailureKnownToHub(
             precompileCall.map(PrecompileInvocation::hubFailure).orElse(false))

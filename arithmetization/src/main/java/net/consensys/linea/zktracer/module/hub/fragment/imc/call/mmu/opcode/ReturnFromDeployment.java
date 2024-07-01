@@ -30,7 +30,7 @@ import org.hyperledger.besu.evm.internal.Words;
  */
 public class ReturnFromDeployment extends MmuCall {
   private final Hub hub;
-  private ContractMetadata contract;
+  private final ContractMetadata contract;
 
   public ReturnFromDeployment(final Hub hub) {
     super(MMU_INST_RAM_TO_EXO_WITH_PADDING);
@@ -40,12 +40,10 @@ public class ReturnFromDeployment extends MmuCall {
     // TODO: get the metaDaa directly from the hub
     final Address contractAddress = hub.currentFrame().frame().getContractAddress();
     final int depNumber = hub.transients().conflation().deploymentInfo().number(contractAddress);
-    final ContractMetadata contractMetadata =
-        ContractMetadata.underDeployment(contractAddress, depNumber);
-    this.contract = contractMetadata;
+    this.contract = ContractMetadata.underDeployment(contractAddress, depNumber);
 
     this.sourceId(hub.currentFrame().contextNumber())
-        .auxId(hub.state().stamps().hashInfo())
+        .auxId(hub.state().stamps().hub())
         .sourceOffset(EWord.of(hub.messageFrame().getStackItem(0)))
         .size(Words.clampedToLong(hub.messageFrame().getStackItem(1)))
         .referenceSize(Words.clampedToLong(hub.messageFrame().getStackItem(1)))

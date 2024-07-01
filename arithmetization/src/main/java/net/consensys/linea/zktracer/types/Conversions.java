@@ -15,6 +15,8 @@
 
 package net.consensys.linea.zktracer.types;
 
+import static net.consensys.linea.zktracer.module.constants.GlobalConstants.LLARGE;
+
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -27,6 +29,7 @@ public class Conversions {
   public static final Bytes ONE = Bytes.of(1);
   public static final BigInteger UNSIGNED_LONG_MASK =
       BigInteger.ONE.shiftLeft(Long.SIZE).subtract(BigInteger.ONE);
+  public static int LIMB_BIT_SIZE = 8 * LLARGE;
 
   public static Bytes bigIntegerToBytes(final BigInteger input) {
     Bytes bytes;
@@ -142,5 +145,27 @@ public class Conversions {
 
   public static Bytes booleanToBytes(boolean x) {
     return x ? ONE : Bytes.EMPTY;
+  }
+
+  public static long bytesToLong(final Bytes input) {
+    return input.trimLeadingZeros().toLong();
+  }
+
+  public static BigInteger hiPart(final BigInteger input) {
+    if (input.bitLength() <= LIMB_BIT_SIZE) {
+      return BigInteger.ZERO;
+    }
+    final Bytes inputBytes = bigIntegerToBytes(input);
+    final Bytes hiBytes = inputBytes.slice(0, inputBytes.size() - LLARGE);
+    return hiBytes.toUnsignedBigInteger();
+  }
+
+  public static BigInteger lowPart(final BigInteger input) {
+    if (input.bitLength() <= LIMB_BIT_SIZE) {
+      return input;
+    }
+    final Bytes inputBytes = bigIntegerToBytes(input);
+    final Bytes lowBytes = inputBytes.slice(inputBytes.size() - LLARGE, LLARGE);
+    return lowBytes.toUnsignedBigInteger();
   }
 }

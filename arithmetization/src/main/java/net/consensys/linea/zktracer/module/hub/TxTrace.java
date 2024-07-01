@@ -37,7 +37,7 @@ public class TxTrace implements PostTransactionDefer {
   /** A cache for the line count of this transaction */
   private int cachedLineCount = 0;
 
-  private long refundedGas = -1;
+  private long refundCounter = -1;
   @Getter private long leftoverGas = -1;
   @Getter private long gasRefundFinalCounter = 0; // TODO:
 
@@ -68,20 +68,29 @@ public class TxTrace implements PostTransactionDefer {
    */
   public void add(TraceSection section) {
     section.parentTrace(this);
+    // Link the current section with the previous and next one
+    final TraceSection previousSection = this.trace.isEmpty() ? null : this.trace.getLast();
+    if (previousSection != null) {
+      previousSection.nextSection(section);
+      section.previousSection(previousSection);
+    } else {
+      // If this section is the first section of the transaction, set the logStamp
+      section.commonValues.logStamp(section.commonValues.stamps.log());
+    }
     this.trace.add(section);
   }
 
-  public long refundedGas() {
-    if (this.refundedGas == -1) {
-      this.refundedGas = 0;
+  public long refundCounter() {
+    if (this.refundCounter == -1) {
+      this.refundCounter = 0;
       for (TraceSection section : this.trace) {
         if (!section.hasReverted()) {
-          this.refundedGas += section.refundDelta();
+          this.refundCounter += section.refundDelta();
         }
       }
     }
 
-    return this.refundedGas;
+    return this.refundCounter;
   }
 
   @Override
@@ -94,9 +103,8 @@ public class TxTrace implements PostTransactionDefer {
    */
   public void commit(Trace hubTrace) {
     for (TraceSection opSection : this.trace) {
-      for (TraceSection.TraceLine line : opSection.lines()) {
-        line.trace(hubTrace, opSection.stackHeight(), opSection.stackHeightNew());
-      }
+      opSection.seal();
+      opSection.trace(hubTrace);
     }
   }
 
@@ -106,7 +114,7 @@ public class TxTrace implements PostTransactionDefer {
   public int lineCount() {
     if (this.cachedLineCount == 0) {
       for (TraceSection s : trace) {
-        this.cachedLineCount += s.lines().size();
+        this.cachedLineCount += s.fragments().size();
       }
     }
     return this.cachedLineCount;

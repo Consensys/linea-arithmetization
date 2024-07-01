@@ -15,51 +15,29 @@
 
 package net.consensys.linea.zktracer.runtime;
 
-import java.util.ArrayList;
-import java.util.List;
-
-import lombok.RequiredArgsConstructor;
 import net.consensys.linea.zktracer.module.hub.Hub;
-import net.consensys.linea.zktracer.runtime.callstack.CallStack;
+import net.consensys.linea.zktracer.runtime.callstack.CallFrame;
+import net.consensys.linea.zktracer.types.EWord;
 import org.apache.tuweni.bytes.Bytes;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.internal.Words;
 
-@RequiredArgsConstructor
 public class LogInvocation {
-  private final CallStack callStack;
-  private final Bytes payload;
-  private final List<Bytes> topics;
-  private final int callFrameId;
+  public final CallFrame callFrame;
+  public final Bytes ramSourceBytes;
+  public final EWord offset;
+  public final long size;
 
-  public static int forOpcode(final Hub hub) {
-    final List<Bytes> topics = new ArrayList<>(4);
-    final Bytes payload = hub.transients().op().logData();
-    switch (hub.opCode()) {
-      case LOG0 -> {}
-      case LOG1 -> topics.add(hub.messageFrame().getStackItem(2));
-      case LOG2 -> {
-        topics.add(hub.messageFrame().getStackItem(2));
-        topics.add(hub.messageFrame().getStackItem(3));
-      }
-      case LOG3 -> {
-        topics.add(hub.messageFrame().getStackItem(2));
-        topics.add(hub.messageFrame().getStackItem(3));
-        topics.add(hub.messageFrame().getStackItem(4));
-      }
-      case LOG4 -> {
-        topics.add(hub.messageFrame().getStackItem(2));
-        topics.add(hub.messageFrame().getStackItem(3));
-        topics.add(hub.messageFrame().getStackItem(4));
-        topics.add(hub.messageFrame().getStackItem(5));
-      }
-      default -> throw new IllegalStateException("not a LOG operation");
-    }
-
-    return hub.transients()
-        .conflation()
-        .log(new LogInvocation(hub.callStack(), payload, topics, hub.currentFrame().id()));
+  public LogInvocation(Hub hub) {
+    this.callFrame = hub.currentFrame();
+    final MessageFrame messageFrame = callFrame.frame();
+    offset = EWord.of(messageFrame.getStackItem(0));
+    size = Words.clampedToLong(messageFrame.getStackItem(1));
+    this.ramSourceBytes =
+        size == 0 ? Bytes.EMPTY : messageFrame.shadowReadMemory(0, messageFrame.memoryByteSize());
   }
 
   public boolean reverted() {
-    return this.callStack.getById(this.callFrameId).hasReverted();
+    return this.callFrame.hasReverted();
   }
 }

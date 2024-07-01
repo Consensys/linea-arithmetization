@@ -28,12 +28,10 @@ import net.consensys.linea.zktracer.container.stacked.list.StackedList;
 import net.consensys.linea.zktracer.module.Module;
 import net.consensys.linea.zktracer.module.add.Add;
 import net.consensys.linea.zktracer.module.hub.Hub;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.OobCall;
 import net.consensys.linea.zktracer.module.mod.Mod;
 import net.consensys.linea.zktracer.module.wcp.Wcp;
-import net.consensys.linea.zktracer.opcode.OpCode;
-import org.hyperledger.besu.datatypes.Address;
 import org.hyperledger.besu.evm.frame.MessageFrame;
-import org.hyperledger.besu.evm.internal.Words;
 
 @RequiredArgsConstructor
 /** Implementation of a {@link Module} for out of bounds. */
@@ -47,25 +45,22 @@ public class Oob implements Module {
   private final Mod mod;
   private final Wcp wcp;
 
+  private OobOperation oobOperation;
+
   @Override
   public String moduleKey() {
     return "OOB";
   }
 
-  static final List<Address> PRECOMPILES_HANDLED_BY_OOB =
-      List.of(
-          Address.ECREC,
-          Address.SHA256,
-          Address.RIPEMD160,
-          Address.ID,
-          Address.ALTBN128_ADD,
-          Address.ALTBN128_MUL,
-          Address.ALTBN128_PAIRING,
-          Address.BLAKE2B_F_COMPRESSION);
+  public void call(OobCall oobCall) {
+    this.chunks.add(new OobOperation(oobCall, hub.messageFrame(), add, mod, wcp, hub));
+  }
 
   @Override
-  public void tracePreOpcode(MessageFrame frame) { // This will be renamed to tracePreOp
-    this.chunks.add(new OobOperation(frame, add, mod, wcp, hub, false, 0, 0));
+  public void tracePreOpcode(MessageFrame frame) { // TODO: maybe move in the hub
+    /*
+    oobOperation = new OobOperation(frame, add, mod, wcp, hub, false, 0, 0);
+    this.chunks.add(oobOperation);
     OpCode opCode = OpCode.of(frame.getCurrentOperation().getOpcode());
 
     if (opCode.isCall()) {
@@ -73,37 +68,41 @@ public class Oob implements Module {
 
       if (PRECOMPILES_HANDLED_BY_OOB.contains(target)) {
         if (target.equals(Address.BLAKE2B_F_COMPRESSION)) {
-          OobOperation oobOperation = new OobOperation(frame, add, mod, wcp, hub, true, 1, 0);
+          oobOperation = new OobOperation(frame, add, mod, wcp, hub, true, 1, 0);
           this.chunks.add(oobOperation);
           boolean validCds = oobOperation.getOutgoingResLo()[0].equals(BigInteger.ONE);
           if (validCds) {
-            this.chunks.add(new OobOperation(frame, add, mod, wcp, hub, true, 2, 0));
+            oobOperation = new OobOperation(frame, add, mod, wcp, hub, true, 2, 0);
+            this.chunks.add(oobOperation);
           }
         } else if (target.equals(Address.MODEXP)) {
           for (int i = 1; i <= 7; i++) {
-            this.chunks.add(new OobOperation(frame, add, mod, wcp, hub, true, 0, i));
+            oobOperation = new OobOperation(frame, add, mod, wcp, hub, true, 0, i);
+            this.chunks.add(oobOperation);
           }
         } else {
           // Other precompiles case
-          this.chunks.add(new OobOperation(frame, add, mod, wcp, hub, true, 0, 0));
+          oobOperation = new OobOperation(frame, add, mod, wcp, hub, true, 0, 0);
+          this.chunks.add(oobOperation);
         }
       }
     }
+    */
   }
 
   final void traceChunk(final OobOperation chunk, int stamp, Trace trace) {
     int nRows = chunk.nRows();
 
     for (int ct = 0; ct < nRows; ct++) {
-      trace = chunk.getOobParameters().trace(trace);
+      trace = chunk.getOobCall().trace(trace);
 
       // Note: if a value is bigger than 128, do not use Bytes.of and use Bytes.ofUnsignedType
       // instead (according to size)
       trace
           .stamp(stamp)
           .ct((short) ct)
-          .ctMax((short) chunk.maxCt())
-          .oobInst(bigIntegerToBytes(chunk.getOobInst()))
+          .ctMax((short) chunk.getMaxCt())
+          .oobInst(bigIntegerToBytes(BigInteger.valueOf(chunk.getOobInst())))
           .isJump(chunk.isJump())
           .isJumpi(chunk.isJumpi())
           .isRdc(chunk.isRdc())

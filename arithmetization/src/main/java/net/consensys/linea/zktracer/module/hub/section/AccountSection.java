@@ -20,9 +20,7 @@ import net.consensys.linea.zktracer.module.hub.fragment.TraceFragment;
 
 public class AccountSection extends TraceSection {
   public AccountSection(Hub hub, TraceFragment... chunks) {
+    super(hub);
     this.addFragmentsAndStack(hub, chunks);
   }
-
-  @Override
-  public void seal(Hub hub) {}
 }

@@ -19,28 +19,21 @@ import java.util.ArrayList;
 import java.util.List;
 
 import lombok.RequiredArgsConstructor;
-import net.consensys.linea.zktracer.module.exp.ModexpLogOperation;
 import net.consensys.linea.zktracer.module.hub.Hub;
 import net.consensys.linea.zktracer.module.hub.fragment.ContextFragment;
 import net.consensys.linea.zktracer.module.hub.fragment.TraceFragment;
 import net.consensys.linea.zktracer.module.hub.fragment.imc.ImcFragment;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.exp.ExpCallForModexpLogComputation;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.exp.ModexpLogExpCall;
 import net.consensys.linea.zktracer.module.hub.fragment.imc.call.mmu.MmuCall;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.Blake2FPrecompile1;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.Blake2FPrecompile2;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.EcAdd;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.EcMul;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.EcPairing;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.EcRecover;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.Identity;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.ModexpCds;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.ModexpExtract;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.ModexpLead;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.ModexpPricing;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.ModexpXbs;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.RipeMd160;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.Sha2;
-import net.consensys.linea.zktracer.types.EWord;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.Blake2fCallDataSizeOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.Blake2fParamsOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.ModexpCallDataSizeOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.ModexpExtractOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.ModexpLeadOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.ModexpPricingOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.ModexpXbsCase;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.ModexpXbsOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.precompiles.PrecompileCommonOobCall;
 
 @RequiredArgsConstructor
 public class PrecompileLinesGenerator {
@@ -49,14 +42,14 @@ public class PrecompileLinesGenerator {
     switch (p.precompile()) {
       case EC_RECOVER -> {
         if (p.hubFailure()) {
-          r.add(ImcFragment.empty(hub).callOob(new EcRecover(p)));
+          r.add(ImcFragment.empty(hub).callOob(new PrecompileCommonOobCall(p)));
         } else {
           final boolean recoverySuccessful =
               ((EcRecoverMetadata) p.metadata()).recoverySuccessful();
 
           r.add(
               ImcFragment.empty(hub)
-                  .callOob(new EcRecover(p))
+                  .callOob(new PrecompileCommonOobCall(p))
                   .callMmu(
                       p.callDataSource().isEmpty()
                           ? MmuCall.nop()
@@ -77,11 +70,11 @@ public class PrecompileLinesGenerator {
       }
       case SHA2_256 -> {
         if (p.hubFailure()) {
-          r.add(ImcFragment.empty(hub).callOob(new Sha2(p)));
+          r.add(ImcFragment.empty(hub).callOob(new PrecompileCommonOobCall(p)));
         } else {
           r.add(
               ImcFragment.empty(hub)
-                  .callOob(new Sha2(p))
+                  .callOob(new PrecompileCommonOobCall(p))
                   .callMmu(
                       p.callDataSource().isEmpty() ? MmuCall.nop() : MmuCall.forSha2(hub, p, 0)));
           r.add(
@@ -96,11 +89,11 @@ public class PrecompileLinesGenerator {
       }
       case RIPEMD_160 -> {
         if (p.hubFailure()) {
-          r.add(ImcFragment.empty(hub).callOob(new RipeMd160(p)));
+          r.add(ImcFragment.empty(hub).callOob(new PrecompileCommonOobCall(p)));
         } else {
           r.add(
               ImcFragment.empty(hub)
-                  .callOob(new Sha2(p))
+                  .callOob(new PrecompileCommonOobCall(p))
                   .callMmu(
                       p.callDataSource().isEmpty()
                           ? MmuCall.nop()
@@ -121,11 +114,11 @@ public class PrecompileLinesGenerator {
       }
       case IDENTITY -> {
         if (p.hubFailure()) {
-          r.add(ImcFragment.empty(hub).callOob(new Identity(p)));
+          r.add(ImcFragment.empty(hub).callOob(new PrecompileCommonOobCall(p)));
         } else {
           r.add(
               ImcFragment.empty(hub)
-                  .callOob(new Identity(p))
+                  .callOob(new PrecompileCommonOobCall(p))
                   .callMmu(MmuCall.forIdentity(hub, p, 0)));
           r.add(ImcFragment.empty(hub).callMmu(MmuCall.forIdentity(hub, p, 1)));
         }
@@ -136,52 +129,34 @@ public class PrecompileLinesGenerator {
         final int ebsInt = m.ebs().toUnsignedBigInteger().intValueExact();
         final int mbsInt = m.mbs().toUnsignedBigInteger().intValueExact();
 
-        r.add(
-            ImcFragment.empty(hub).callOob(new ModexpCds(p.requestedReturnDataTarget().length())));
+        r.add(ImcFragment.empty(hub).callOob(new ModexpCallDataSizeOobCall(p)));
         r.add(
             ImcFragment.empty(hub)
-                .callOob(new ModexpXbs(m.bbs(), EWord.ZERO, false))
+                .callOob(new ModexpXbsOobCall(p, ModexpXbsCase.OOB_INST_MODEXP_BBS))
                 .callMmu(m.extractBbs() ? MmuCall.forModExp(hub, p, 2) : MmuCall.nop()));
         r.add(
             ImcFragment.empty(hub)
-                .callOob(new ModexpXbs(m.ebs(), EWord.ZERO, false))
+                .callOob(new ModexpXbsOobCall(p, ModexpXbsCase.OOB_INST_MODEXP_EBS))
                 .callMmu(m.extractEbs() ? MmuCall.forModExp(hub, p, 3) : MmuCall.nop()));
         r.add(
             ImcFragment.empty(hub)
-                .callOob(new ModexpXbs(m.mbs(), m.bbs(), true))
+                .callOob(new ModexpXbsOobCall(p, ModexpXbsCase.OOB_INST_MODEXP_MBS))
                 .callMmu(m.extractEbs() ? MmuCall.forModExp(hub, p, 4) : MmuCall.nop()));
         final ImcFragment line5 =
             ImcFragment.empty(hub)
-                .callOob(new ModexpLead(bbsInt, p.callDataSource().length(), ebsInt))
+                .callOob(new ModexpLeadOobCall(p))
                 .callMmu(m.loadRawLeadingWord() ? MmuCall.forModExp(hub, p, 5) : MmuCall.nop());
         if (m.loadRawLeadingWord()) {
-          line5.callExp(
-              new ExpCallForModexpLogComputation(
-                  m.rawLeadingWord(),
-                  Math.min((int) (p.callDataSource().length() - 96 - bbsInt), 32),
-                  Math.min(ebsInt, 32)));
+          line5.callExp(new ModexpLogExpCall(p));
         }
         r.add(line5);
-        r.add(
-            ImcFragment.empty(hub)
-                .callOob(
-                    new ModexpPricing(
-                        p,
-                        m.loadRawLeadingWord()
-                            ? ModexpLogOperation.LeadLogTrimLead.fromArgs(
-                                    m.rawLeadingWord(),
-                                    Math.min((int) (p.callDataSource().length() - 96 - bbsInt), 32),
-                                    Math.min(ebsInt, 32))
-                                .leadLog()
-                            : 0,
-                        Math.max(mbsInt, bbsInt))));
-
+        r.add(ImcFragment.empty(hub).callOob(new ModexpPricingOobCall(p)));
         if (p.ramFailure()) {
-          r.add(ContextFragment.nonExecutionEmptyReturnData(hub.callStack()));
+          r.add(ContextFragment.nonExecutionEmptyReturnData(hub));
         } else {
           r.add(
               ImcFragment.empty(hub)
-                  .callOob(new ModexpExtract(p.callDataSource().length(), bbsInt, ebsInt, mbsInt))
+                  .callOob(new ModexpExtractOobCall(p))
                   .callMmu(m.extractModulus() ? MmuCall.forModExp(hub, p, 7) : MmuCall.nop()));
 
           if (m.extractModulus()) {
@@ -198,18 +173,26 @@ public class PrecompileLinesGenerator {
             r.add(ImcFragment.empty(hub).callMmu(MmuCall.forModExp(hub, p, 11)));
           }
 
-          r.add(ContextFragment.providesReturnData(hub.callStack()));
+          r.add(
+              ContextFragment.providesReturnData(
+                  hub, hub.currentFrame().contextNumber(), hub.newChildContextNumber()));
         }
       }
       case EC_ADD -> {
         if (p.hubFailure()) {
-          r.add(ImcFragment.empty(hub).callOob(new EcAdd(p)));
-          r.add(ContextFragment.nonExecutionEmptyReturnData(hub.callStack()));
+          r.add(ImcFragment.empty(hub).callOob(new PrecompileCommonOobCall(p)));
+          r.add(ContextFragment.nonExecutionEmptyReturnData(hub));
         } else if (p.ramFailure()) {
-          r.add(ImcFragment.empty(hub).callOob(new EcAdd(p)).callMmu(MmuCall.forEcAdd(hub, p, 0)));
-          r.add(ContextFragment.nonExecutionEmptyReturnData(hub.callStack()));
+          r.add(
+              ImcFragment.empty(hub)
+                  .callOob(new PrecompileCommonOobCall(p))
+                  .callMmu(MmuCall.forEcAdd(hub, p, 0)));
+          r.add(ContextFragment.nonExecutionEmptyReturnData(hub));
         } else {
-          r.add(ImcFragment.empty(hub).callOob(new EcAdd(p)).callMmu(MmuCall.forEcAdd(hub, p, 0)));
+          r.add(
+              ImcFragment.empty(hub)
+                  .callOob(new PrecompileCommonOobCall(p))
+                  .callMmu(MmuCall.forEcAdd(hub, p, 0)));
           r.add(
               ImcFragment.empty(hub)
                   .callMmu(
@@ -220,18 +203,26 @@ public class PrecompileLinesGenerator {
                       p.requestedReturnDataTarget().isEmpty()
                           ? MmuCall.nop()
                           : MmuCall.forEcAdd(hub, p, 2)));
-          r.add(ContextFragment.providesReturnData(hub.callStack()));
+          r.add(
+              ContextFragment.providesReturnData(
+                  hub, hub.currentFrame().contextNumber(), hub.newChildContextNumber()));
         }
       }
       case EC_MUL -> {
         if (p.hubFailure()) {
-          r.add(ImcFragment.empty(hub).callOob(new EcMul(p)));
-          r.add(ContextFragment.nonExecutionEmptyReturnData(hub.callStack()));
+          r.add(ImcFragment.empty(hub).callOob(new PrecompileCommonOobCall(p)));
+          r.add(ContextFragment.nonExecutionEmptyReturnData(hub));
         } else if (p.ramFailure()) {
-          r.add(ImcFragment.empty(hub).callOob(new EcMul(p)).callMmu(MmuCall.forEcMul(hub, p, 0)));
-          r.add(ContextFragment.nonExecutionEmptyReturnData(hub.callStack()));
+          r.add(
+              ImcFragment.empty(hub)
+                  .callOob(new PrecompileCommonOobCall(p))
+                  .callMmu(MmuCall.forEcMul(hub, p, 0)));
+          r.add(ContextFragment.nonExecutionEmptyReturnData(hub));
         } else {
-          r.add(ImcFragment.empty(hub).callOob(new EcMul(p)).callMmu(MmuCall.forEcMul(hub, p, 0)));
+          r.add(
+              ImcFragment.empty(hub)
+                  .callOob(new PrecompileCommonOobCall(p))
+                  .callMmu(MmuCall.forEcMul(hub, p, 0)));
           r.add(
               ImcFragment.empty(hub)
                   .callMmu(
@@ -242,23 +233,25 @@ public class PrecompileLinesGenerator {
                       p.requestedReturnDataTarget().isEmpty()
                           ? MmuCall.nop()
                           : MmuCall.forEcMul(hub, p, 2)));
-          r.add(ContextFragment.providesReturnData(hub.callStack()));
+          r.add(
+              ContextFragment.providesReturnData(
+                  hub, hub.currentFrame().contextNumber(), hub.newChildContextNumber()));
         }
       }
       case EC_PAIRING -> {
         if (p.hubFailure()) {
-          r.add(ImcFragment.empty(hub).callOob(new EcPairing(p)));
-          r.add(ContextFragment.nonExecutionEmptyReturnData(hub.callStack()));
+          r.add(ImcFragment.empty(hub).callOob(new PrecompileCommonOobCall(p)));
+          r.add(ContextFragment.nonExecutionEmptyReturnData(hub));
         } else if (p.ramFailure()) {
           r.add(
               ImcFragment.empty(hub)
-                  .callOob(new EcPairing(p))
+                  .callOob(new PrecompileCommonOobCall(p))
                   .callMmu(MmuCall.forEcPairing(hub, p, 0)));
-          r.add(ContextFragment.nonExecutionEmptyReturnData(hub.callStack()));
+          r.add(ContextFragment.nonExecutionEmptyReturnData(hub));
         } else {
           r.add(
               ImcFragment.empty(hub)
-                  .callOob(new EcPairing(p))
+                  .callOob(new PrecompileCommonOobCall(p))
                   .callMmu(MmuCall.forEcPairing(hub, p, 0)));
           r.add(ImcFragment.empty(hub).callMmu(MmuCall.forEcPairing(hub, p, 1)));
           r.add(
@@ -267,26 +260,28 @@ public class PrecompileLinesGenerator {
                       p.requestedReturnDataTarget().isEmpty()
                           ? MmuCall.nop()
                           : MmuCall.forEcPairing(hub, p, 2)));
-          r.add(ContextFragment.providesReturnData(hub.callStack()));
+          r.add(
+              ContextFragment.providesReturnData(
+                  hub, hub.currentFrame().contextNumber(), hub.newChildContextNumber()));
         }
       }
       case BLAKE2F -> {
         if (p.hubFailure()) {
-          r.add(ImcFragment.empty(hub).callOob(new Blake2FPrecompile1(p)));
+          r.add(ImcFragment.empty(hub).callOob(new Blake2fCallDataSizeOobCall(p)));
         } else if (p.ramFailure()) {
           r.add(
               ImcFragment.empty(hub)
-                  .callOob(new Blake2FPrecompile1(p))
+                  .callOob(new Blake2fCallDataSizeOobCall(p))
                   .callMmu(MmuCall.forBlake2f(hub, p, 0)));
-          r.add(ImcFragment.empty(hub).callOob(new Blake2FPrecompile2(p)));
+          r.add(ImcFragment.empty(hub).callOob(new Blake2fParamsOobCall(p)));
         } else {
           r.add(
               ImcFragment.empty(hub)
-                  .callOob(new Blake2FPrecompile1(p))
+                  .callOob(new Blake2fCallDataSizeOobCall(p))
                   .callMmu(MmuCall.forBlake2f(hub, p, 0)));
           r.add(
               ImcFragment.empty(hub)
-                  .callOob(new Blake2FPrecompile2(p))
+                  .callOob(new Blake2fParamsOobCall(p))
                   .callMmu(MmuCall.forBlake2f(hub, p, 1)));
           r.add(ImcFragment.empty(hub).callMmu(MmuCall.forBlake2f(hub, p, 2)));
           r.add(ImcFragment.empty(hub).callMmu(MmuCall.forBlake2f(hub, p, 3)));
@@ -296,8 +291,9 @@ public class PrecompileLinesGenerator {
 
     r.add(
         p.success()
-            ? ContextFragment.providesReturnData(hub.callStack())
-            : ContextFragment.nonExecutionEmptyReturnData(hub.callStack()));
+            ? ContextFragment.providesReturnData(
+                hub, hub.currentFrame().contextNumber(), hub.newChildContextNumber())
+            : ContextFragment.nonExecutionEmptyReturnData(hub));
     return r;
   }
 }

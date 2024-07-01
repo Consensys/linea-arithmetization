@@ -17,7 +17,6 @@ package net.consensys.linea.zktracer.module.trm;
 
 import static net.consensys.linea.zktracer.module.constants.GlobalConstants.LLARGE;
 
-import java.math.BigInteger;
 import java.nio.MappedByteBuffer;
 import java.util.List;
 
@@ -26,6 +25,7 @@ import net.consensys.linea.zktracer.container.stacked.set.StackedSet;
 import net.consensys.linea.zktracer.module.Module;
 import net.consensys.linea.zktracer.opcode.OpCode;
 import net.consensys.linea.zktracer.types.EWord;
+import net.consensys.linea.zktracer.types.TransactionProcessingMetadata;
 import org.apache.tuweni.bytes.Bytes32;
 import org.hyperledger.besu.datatypes.AccessListEntry;
 import org.hyperledger.besu.datatypes.Address;
@@ -74,7 +74,12 @@ public class Trm implements Module {
   }
 
   @Override
-  public void traceStartTx(WorldView worldView, Transaction tx) {
+  public void traceStartTx(WorldView world, TransactionProcessingMetadata txMetaData) {
+    // Add effective receiver Address
+    this.trimmings.add(new TrmOperation(EWord.of(txMetaData.getEffectiveTo())));
+
+    // Add Address in AccessList to warm
+    final Transaction tx = txMetaData.getBesuTransaction();
     final TransactionType txType = tx.getType();
     switch (txType) {
       case ACCESS_LIST, EIP1559 -> {
@@ -91,12 +96,6 @@ public class Trm implements Module {
         throw new IllegalStateException("TransactionType not supported: " + txType);
       }
     }
-  }
-
-  public static boolean isPrec(EWord data) {
-    BigInteger trmAddrParamAsBigInt = data.slice(12, 20).toUnsignedBigInteger();
-    return (!trmAddrParamAsBigInt.equals(BigInteger.ZERO)
-        && (trmAddrParamAsBigInt.compareTo(BigInteger.TEN) < 0));
   }
 
   @Override

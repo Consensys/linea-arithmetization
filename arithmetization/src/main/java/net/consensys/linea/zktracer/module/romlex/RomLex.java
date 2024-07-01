@@ -32,6 +32,7 @@ import net.consensys.linea.zktracer.ColumnHeader;
 import net.consensys.linea.zktracer.container.stacked.set.StackedSet;
 import net.consensys.linea.zktracer.module.Module;
 import net.consensys.linea.zktracer.module.hub.Hub;
+import net.consensys.linea.zktracer.types.TransactionProcessingMetadata;
 import org.apache.tuweni.bytes.Bytes;
 import org.hyperledger.besu.datatypes.Address;
 import org.hyperledger.besu.datatypes.Hash;
@@ -86,7 +87,10 @@ public class RomLex implements Module {
       }
     }
 
-    throw new RuntimeException("RomChunk not found");
+    throw new RuntimeException(
+        String.format(
+            "RomChunk with address %s, deployment number %s and deploymentStatus %s not found",
+            metadata.address(), metadata.deploymentNumber(), !metadata.underDeployment()));
   }
 
   public Optional<RomChunk> getChunkByMetadata(final ContractMetadata metadata) {
@@ -104,7 +108,8 @@ public class RomLex implements Module {
   }
 
   @Override
-  public void traceStartTx(WorldView worldView, Transaction tx) {
+  public void traceStartTx(WorldView worldView, TransactionProcessingMetadata txMetaData) {
+    final Transaction tx = txMetaData.getBesuTransaction();
     // Contract creation with InitCode
     if (tx.getInit().isPresent() && !tx.getInit().get().isEmpty()) {
       final Address calledAddress = Address.contractAddress(tx.getSender(), tx.getNonce());
@@ -275,8 +280,7 @@ public class RomLex implements Module {
         .validateRow();
   }
 
-  @Override
-  public void traceEndConflation(final WorldView state) {
+  public void determineCodeFragmentIndex() {
     this.sortedChunks.addAll(this.chunks);
     this.sortedChunks.sort(ROM_CHUNK_COMPARATOR);
   }

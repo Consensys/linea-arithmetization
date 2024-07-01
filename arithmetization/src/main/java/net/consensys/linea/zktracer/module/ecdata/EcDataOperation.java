@@ -57,6 +57,7 @@ import java.util.Set;
 
 import com.google.common.base.Preconditions;
 import lombok.Getter;
+import lombok.Setter;
 import lombok.experimental.Accessors;
 import net.consensys.linea.zktracer.container.ModuleOperation;
 import net.consensys.linea.zktracer.module.ext.Ext;
@@ -75,6 +76,8 @@ public class EcDataOperation extends ModuleOperation {
   private static final EWord P_BN = EWord.of(P_BN_HI, P_BN_LO);
   public static final EWord SECP256K1N = EWord.of(SECP256K1N_HI, SECP256K1N_LO);
   public static final int nBYTES_OF_DELTA_BYTES = 4;
+
+  @Setter private Bytes returnData;
 
   private final Wcp wcp;
   private final Ext ext;

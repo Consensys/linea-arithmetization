@@ -15,36 +15,33 @@
 
 package net.consensys.linea.zktracer.module.hub.fragment.imc;
 
-import static net.consensys.linea.zktracer.module.UtilCalculator.allButOneSixtyFourth;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
 import net.consensys.linea.zktracer.module.hub.Hub;
 import net.consensys.linea.zktracer.module.hub.Trace;
-import net.consensys.linea.zktracer.module.hub.TransactionStack;
 import net.consensys.linea.zktracer.module.hub.fragment.TraceFragment;
 import net.consensys.linea.zktracer.module.hub.fragment.TraceSubFragment;
 import net.consensys.linea.zktracer.module.hub.fragment.imc.call.MxpCall;
 import net.consensys.linea.zktracer.module.hub.fragment.imc.call.StpCall;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.exp.ExpCallForExpPricing;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.exp.ExpCallForModexpLogComputation;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.exp.ExpCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.exp.ExplogExpCall;
 import net.consensys.linea.zktracer.module.hub.fragment.imc.call.mmu.MmuCall;
 import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.OobCall;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.Call;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.CallDataLoad;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.DeploymentReturn;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.ExceptionalCall;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.Jump;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.SStore;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.CallDataLoadOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.CallOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.DeploymentOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.JumpOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.JumpiOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.SstoreOobCall;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.oob.opcodes.XCallOobCall;
 import net.consensys.linea.zktracer.opcode.OpCode;
 import net.consensys.linea.zktracer.opcode.gas.GasConstants;
 import net.consensys.linea.zktracer.types.EWord;
+import net.consensys.linea.zktracer.types.TransactionProcessingMetadata;
 import org.apache.tuweni.bytes.Bytes;
-import org.hyperledger.besu.datatypes.Wei;
 import org.hyperledger.besu.evm.account.Account;
-import org.hyperledger.besu.evm.account.AccountState;
 import org.hyperledger.besu.evm.frame.MessageFrame;
 import org.hyperledger.besu.evm.internal.Words;
 
@@ -87,12 +84,12 @@ public class ImcFragment implements TraceFragment {
   public static ImcFragment forTxInit(final Hub hub) {
     // isdeployment == false
     // non empty calldata
-    final TransactionStack.MetaTransaction currentTx = hub.transients().tx();
-    final boolean isDeployment = currentTx.besuTx().getTo().isEmpty();
+    final TransactionProcessingMetadata currentTx = hub.txStack().current();
+    final boolean isMessageCallTransaction = currentTx.getBesuTransaction().getTo().isPresent();
 
-    final Optional<Bytes> txData = currentTx.besuTx().getData();
+    final Optional<Bytes> txData = currentTx.getBesuTransaction().getData();
     final boolean shouldCopyTxCallData =
-        !isDeployment
+        isMessageCallTransaction
             && txData.isPresent()
             && !txData.get().isEmpty()
             && currentTx.requiresEvmExecution();
@@ -122,14 +119,9 @@ public class ImcFragment implements TraceFragment {
       switch (hub.opCode()) {
         case CALL, STATICCALL, DELEGATECALL, CALLCODE -> {
           if (hub.opCode().equals(OpCode.CALL) && hub.pch().exceptions().any()) {
-            r.callOob(new ExceptionalCall(EWord.of(hub.messageFrame().getStackItem(2))));
+            r.callOob(new XCallOobCall());
           } else {
-            r.callOob(
-                new Call(
-                    EWord.of(hub.messageFrame().getStackItem(2)),
-                    EWord.of(callerAccount.getBalance()),
-                    hub.callStack().depth(),
-                    hub.pch().aborts().any()));
+            r.callOob(new CallOobCall());
           }
         }
         default -> throw new IllegalArgumentException("unexpected opcode for IMC/CALL");
@@ -146,23 +138,28 @@ public class ImcFragment implements TraceFragment {
       final long stipend = value.isZero() ? 0 : GasConstants.G_CALL_STIPEND.cost();
       final long upfrontCost = Hub.GAS_PROJECTOR.of(hub.messageFrame(), hub.opCode()).total();
 
-      r.callStp(
-          new StpCall(
-              hub.opCode().byteValue(),
-              EWord.of(gas),
-              value,
-              calledAccount.isPresent(),
-              calledAccount
-                  .map(a -> hub.messageFrame().isAddressWarm(a.getAddress()))
-                  .orElse(false),
-              hub.pch().exceptions().outOfGas(),
-              upfrontCost,
-              Math.max(
-                  Words.unsignedMin(
-                      allButOneSixtyFourth(hub.messageFrame().getRemainingGas() - upfrontCost),
-                      gas),
-                  0),
-              stipend));
+      // TODO: @Olivier get memory expansion gas
+      long memoryExpansionGas = 0xdeadbeefL;
+      StpCall stpCall = new StpCall(hub, memoryExpansionGas);
+
+      r.callStp(stpCall);
+
+      //              EWord.of(gas),
+      //              value,
+      //              calledAccount.isPresent(),
+      //              calledAccount
+      //                  .map(a -> hub.messageFrame().isAddressWarm(a.getAddress()))
+      //                  .orElse(false),
+      //              hub.pch().exceptions().outOfGasException(),
+      //              upfrontCost,
+      //              Math.max(
+      //                  Words.unsignedMin(
+      //                      allButOneSixtyFourth(hub.messageFrame().getRemainingGas() -
+      // upfrontCost),
+      //                      gas),
+      //                  0),
+      //              stipend)
+      //    );
     }
 
     return r;
@@ -176,7 +173,7 @@ public class ImcFragment implements TraceFragment {
     }
 
     if (hub.pch().signals().exp()) {
-      r.callExp(new ExpCallForExpPricing(EWord.of(hub.messageFrame().getStackItem(1))));
+      r.callExp(new ExplogExpCall());
     }
 
     if (hub.pch().signals().exp() && !hub.pch().exceptions().stackException()) {
@@ -194,10 +191,10 @@ public class ImcFragment implements TraceFragment {
         case MLOAD -> r.callMmu(MmuCall.mload(hub));
         case MSTORE -> r.callMmu(MmuCall.mstore(hub));
         case MSTORE8 -> r.callMmu(MmuCall.mstore8(hub));
-        case LOG0, LOG1, LOG2, LOG3, LOG4 -> r.callMmu(MmuCall.log(hub));
+          // case LOG0, LOG1, LOG2, LOG3, LOG4 -> r.callMmu(MmuCall.log(hub)); done elsewhere
         case CREATE -> r.callMmu(MmuCall.create(hub));
         case RETURN -> r.callMmu(
-            hub.currentFrame().underDeployment()
+            hub.currentFrame().isDeployment()
                 ? MmuCall.returnFromDeployment(
                     hub) // TODO Add a MMU call to MMU_INST_INVALID_CODE8PREFIX
                 : MmuCall.returnFromCall(hub));
@@ -208,34 +205,19 @@ public class ImcFragment implements TraceFragment {
 
     if (hub.pch().signals().oob()) {
       switch (hub.opCode()) {
-        case JUMP, JUMPI -> r.callOob(new Jump(hub, frame));
-        case CALLDATALOAD -> r.callOob(CallDataLoad.build(hub, frame));
-        case SSTORE -> r.callOob(new SStore(frame.getRemainingGas()));
+        case JUMP -> r.callOob(new JumpOobCall());
+        case JUMPI -> r.callOob(new JumpiOobCall());
+        case CALLDATALOAD -> r.callOob(new CallDataLoadOobCall());
+        case SSTORE -> r.callOob(new SstoreOobCall());
         case CALL, CALLCODE -> {
-          r.callOob(
-              new Call(
-                  EWord.of(frame.getStackItem(2)),
-                  EWord.of(
-                      Optional.ofNullable(frame.getWorldUpdater().get(frame.getRecipientAddress()))
-                          .map(AccountState::getBalance)
-                          .orElse(Wei.ZERO)),
-                  hub.callStack().depth(),
-                  hub.pch().aborts().any()));
+          r.callOob(new CallOobCall());
         }
         case DELEGATECALL, STATICCALL -> {
-          r.callOob(
-              new Call(
-                  EWord.ZERO,
-                  EWord.of(
-                      Optional.ofNullable(frame.getWorldUpdater().get(frame.getRecipientAddress()))
-                          .map(AccountState::getBalance)
-                          .orElse(Wei.ZERO)),
-                  hub.callStack().depth(),
-                  hub.pch().aborts().any()));
+          r.callOob(new CallOobCall());
         }
         case RETURN -> {
-          if (hub.currentFrame().underDeployment()) {
-            r.callOob(new DeploymentReturn(EWord.of(frame.getStackItem(1))));
+          if (hub.currentFrame().isDeployment()) {
+            r.callOob(new DeploymentOobCall());
           }
         }
         default -> throw new IllegalArgumentException(
@@ -252,6 +234,7 @@ public class ImcFragment implements TraceFragment {
     } else {
       oobIsSet = true;
     }
+    this.hub.oob().call(f);
     this.moduleCalls.add(f);
     return this;
   }
@@ -270,7 +253,19 @@ public class ImcFragment implements TraceFragment {
     return this;
   }
 
-  public ImcFragment callExp(ExpCallForExpPricing f) {
+  public ImcFragment callExp(ExpCall f) {
+    if (expIsSet) {
+      throw new IllegalStateException("EXP already called");
+    } else {
+      expIsSet = true;
+    }
+    this.hub.exp().call(f);
+    this.moduleCalls.add(f);
+    return this;
+  }
+
+  /*
+  public ImcFragment callExp(ExplogExpCall f) {
     if (expIsSet) {
       throw new IllegalStateException("EXP already called");
     } else {
@@ -280,8 +275,10 @@ public class ImcFragment implements TraceFragment {
     this.moduleCalls.add(f);
     return this;
   }
+  */
 
-  public ImcFragment callExp(ExpCallForModexpLogComputation f) {
+  /*
+  public ImcFragment callExp(ModexplogExpCall f) {
     if (modExpIsSet) {
       throw new IllegalStateException("MODEXP already called");
     } else {
@@ -291,6 +288,7 @@ public class ImcFragment implements TraceFragment {
     this.moduleCalls.add(f);
     return this;
   }
+  */
 
   public ImcFragment callMxp(MxpCall f) {
     if (mxpIsSet) {
@@ -298,6 +296,7 @@ public class ImcFragment implements TraceFragment {
     } else {
       mxpIsSet = true;
     }
+    this.hub.mxp().call(f);
     this.moduleCalls.add(f);
     return this;
   }
@@ -308,6 +307,7 @@ public class ImcFragment implements TraceFragment {
     } else {
       stpIsSet = true;
     }
+    this.hub.stp().call(f);
     this.moduleCalls.add(f);
     return this;
   }
@@ -317,7 +317,7 @@ public class ImcFragment implements TraceFragment {
     trace.peekAtMiscellaneous(true);
 
     for (TraceSubFragment subFragment : this.moduleCalls) {
-      subFragment.trace(trace);
+      subFragment.trace(trace, this.hub.state.stamps());
     }
 
     return trace;

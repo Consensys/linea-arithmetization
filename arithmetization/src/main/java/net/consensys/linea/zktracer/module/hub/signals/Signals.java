@@ -142,19 +142,19 @@ public class Signals {
 
     switch (opCode) {
       case CALLDATACOPY, CODECOPY -> {
-        this.mxp = ex.outOfMemoryExpansion() || ex.outOfGas() || ex.none();
+        this.mxp = ex.memoryExpansion() || ex.outOfGas() || ex.none();
         this.mmu = ex.none() && !frame.getStackItem(2).isZero();
       }
 
       case RETURNDATACOPY -> {
         this.oob = ex.none() || ex.returnDataCopyFault();
-        this.mxp = ex.none() || ex.outOfMemoryExpansion() || ex.outOfGas();
+        this.mxp = ex.none() || ex.memoryExpansion() || ex.outOfGas();
         this.mmu = ex.none() && !frame.getStackItem(2).isZero();
       }
 
       case EXTCODECOPY -> {
         final boolean nonzeroSize = !frame.getStackItem(3).isZero();
-        this.mxp = ex.outOfMemoryExpansion() || ex.outOfGas() || ex.none();
+        this.mxp = ex.memoryExpansion() || ex.outOfGas() || ex.none();
         this.trm = ex.outOfGas() || ex.none();
         this.mmu = ex.none() && nonzeroSize;
 
@@ -168,7 +168,7 @@ public class Signals {
       }
 
       case LOG0, LOG1, LOG2, LOG3, LOG4 -> {
-        this.mxp = ex.outOfMemoryExpansion() || ex.outOfGas() || ex.none();
+        this.mxp = ex.memoryExpansion() || ex.outOfGas() || ex.none();
         this.mmu =
             ex.none()
                 && !frame
@@ -179,13 +179,13 @@ public class Signals {
       }
 
       case CALL, DELEGATECALL, STATICCALL, CALLCODE -> {
-        this.mxp = !ex.staticFault();
+        this.mxp = !ex.staticException();
         this.stp = ex.outOfGas() || ex.none();
-        this.oob = opCode.equals(OpCode.CALL) && ex.staticFault() || ex.none();
+        this.oob = opCode.equals(OpCode.CALL) && ex.staticException() || ex.none();
         this.trm = ex.outOfGas() || ex.none();
 
         final boolean triggersAbortingCondition =
-            ex.none() && this.platformController.aborts().any();
+            ex.none() && this.platformController.abortingConditions().any();
 
         final Address target = Words.toAddress(frame.getStackItem(1));
         final boolean targetAddressHasNonEmptyCode =
@@ -196,21 +196,24 @@ public class Signals {
         this.romLex = ex.none() && !triggersAbortingCondition && targetAddressHasNonEmptyCode;
         this.ecData = ex.none() && EC_PRECOMPILES.contains(target);
         this.exp =
-            ex.none() && this.platformController.aborts().none() && target.equals(Address.MODEXP);
+            ex.none()
+                && this.platformController.abortingConditions().none()
+                && target.equals(Address.MODEXP);
       }
 
       case CREATE, CREATE2 -> {
-        boolean triggersAbortingCondition = ex.none() && this.platformController.aborts().any();
+        boolean triggersAbortingCondition =
+            ex.none() && this.platformController.abortingConditions().any();
 
         boolean triggersFailureCondition = false;
-        if (ex.none() && this.platformController.aborts().none()) {
-          triggersFailureCondition = this.platformController.failures().any();
+        if (ex.none() && this.platformController.abortingConditions().none()) {
+          triggersFailureCondition = this.platformController.failureConditions().any();
         }
 
         final boolean nonzeroSize = !frame.getStackItem(2).isZero();
         final boolean isCreate2 = opCode == OpCode.CREATE2;
 
-        this.mxp = !ex.staticFault();
+        this.mxp = !ex.staticException();
         this.stp = ex.outOfGas() || ex.none();
         this.oob = ex.none();
         this.rlpAddr = ex.none() && !triggersAbortingCondition;
@@ -221,7 +224,7 @@ public class Signals {
       }
 
       case REVERT -> {
-        this.mxp = ex.outOfMemoryExpansion() || ex.outOfGas() || ex.none();
+        this.mxp = ex.memoryExpansion() || ex.outOfGas() || ex.none();
         this.mmu =
             ex.none()
                 && !frame.getStackItem(1).isZero()
@@ -233,8 +236,7 @@ public class Signals {
         final boolean sizeNonZero = !frame.getStackItem(1).isZero();
 
         // WARN: Static part, other modules may be dynamically requested in the hub
-        this.mxp =
-            ex.outOfMemoryExpansion() || ex.outOfGas() || ex.invalidCodePrefix() || ex.none();
+        this.mxp = ex.memoryExpansion() || ex.outOfGas() || ex.invalidCodePrefix() || ex.none();
         this.oob = isDeployment && (ex.codeSizeOverflow() || ex.none());
         this.mmu =
             (isDeployment && ex.invalidCodePrefix())
@@ -247,7 +249,7 @@ public class Signals {
       }
 
       case EXP -> {
-        this.exp = true;
+        this.exp = true; // TODO: use expCall instead
         this.mul = !ex.outOfGas();
       }
 

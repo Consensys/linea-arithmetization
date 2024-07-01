@@ -26,8 +26,7 @@ import net.consensys.linea.zktracer.runtime.LogInvocation;
 @Accessors(fluent = true)
 @Getter
 public class Conflation {
-  private int number = 0;
-  private DeploymentInfo deploymentInfo;
+  private final DeploymentInfo deploymentInfo = new DeploymentInfo();
   private final List<LogInvocation> logs = new ArrayList<>(100);
 
   public int log(LogInvocation logInvocation) {
@@ -37,10 +36,5 @@ public class Conflation {
 
   public int currentLogId() {
     return this.logs.size() - 1;
-  }
-
-  public void update() {
-    this.number++;
-    this.deploymentInfo = new DeploymentInfo();
   }
 }

@@ -25,7 +25,7 @@ import lombok.Setter;
 import lombok.experimental.Accessors;
 import net.consensys.linea.zktracer.ZkTracer;
 import net.consensys.linea.zktracer.container.StackedContainer;
-import net.consensys.linea.zktracer.types.TxState;
+import net.consensys.linea.zktracer.module.hub.HubProcessingPhase;
 import org.apache.tuweni.bytes.Bytes;
 import org.hyperledger.besu.datatypes.Quantity;
 import org.hyperledger.besu.datatypes.Transaction;
@@ -40,7 +40,7 @@ public class Tx implements StackedContainer {
 
   private int number = 0;
   private Transaction transaction;
-  @Setter private TxState state;
+  @Setter private HubProcessingPhase state;
   @Setter private Boolean status;
   private long initialGas;
   StorageInitialValues storage;

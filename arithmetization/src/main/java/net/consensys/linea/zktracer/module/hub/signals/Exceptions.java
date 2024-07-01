@@ -41,12 +41,12 @@ public final class Exceptions {
   private boolean invalidOpcode;
   private boolean stackUnderflow;
   private boolean stackOverflow;
-  private boolean outOfMemoryExpansion;
+  private boolean memoryExpansion;
   private boolean outOfGas;
   private boolean returnDataCopyFault;
   private boolean jumpFault;
-  private boolean staticFault;
-  private boolean outOfSStore;
+  private boolean staticException;
+  private boolean sstore;
   private boolean invalidCodePrefix;
   private boolean codeSizeOverflow;
 
@@ -54,35 +54,35 @@ public final class Exceptions {
    * @param invalidOpcode unknown opcode
    * @param stackUnderflow stack underflow
    * @param stackOverflow stack overflow
-   * @param outOfMemoryExpansion tried to use memory too far away
+   * @param memoryExpansion tried to use memory too far away
    * @param outOfGas not enough gas for instruction
    * @param returnDataCopyFault trying to read pas the RETURNDATA end
    * @param jumpFault jumping to an invalid destination
-   * @param staticFault trying to execute a non-static instruction in a static context
-   * @param outOfSStore not enough gas to execute an SSTORE
+   * @param staticException trying to execute a non-static instruction in a static context
+   * @param sstore not enough gas to execute an SSTORE
    */
   public Exceptions(
       boolean invalidOpcode,
       boolean stackUnderflow,
       boolean stackOverflow,
-      boolean outOfMemoryExpansion,
+      boolean memoryExpansion,
       boolean outOfGas,
       boolean returnDataCopyFault,
       boolean jumpFault,
-      boolean staticFault,
-      boolean outOfSStore,
+      boolean staticException,
+      boolean sstore,
       boolean invalidCodePrefix,
       boolean codeSizeOverflow) {
     this.hub = null;
     this.invalidOpcode = invalidOpcode;
     this.stackUnderflow = stackUnderflow;
     this.stackOverflow = stackOverflow;
-    this.outOfMemoryExpansion = outOfMemoryExpansion;
+    this.memoryExpansion = memoryExpansion;
     this.outOfGas = outOfGas;
     this.returnDataCopyFault = returnDataCopyFault;
     this.jumpFault = jumpFault;
-    this.staticFault = staticFault;
-    this.outOfSStore = outOfSStore;
+    this.staticException = staticException;
+    this.sstore = sstore;
     this.invalidCodePrefix = invalidCodePrefix;
     this.codeSizeOverflow = codeSizeOverflow;
   }
@@ -98,7 +98,7 @@ public final class Exceptions {
     if (this.stackOverflow) {
       return "Stack overflow";
     }
-    if (this.outOfMemoryExpansion) {
+    if (this.memoryExpansion) {
       return "Out of MXP";
     }
     if (this.outOfGas) {
@@ -110,10 +110,10 @@ public final class Exceptions {
     if (this.jumpFault) {
       return "JMP fault";
     }
-    if (this.staticFault) {
+    if (this.staticException) {
       return "Static fault";
     }
-    if (this.outOfSStore) {
+    if (this.sstore) {
       return "Out of SSTORE";
     }
     if (this.invalidCodePrefix) {
@@ -129,12 +129,12 @@ public final class Exceptions {
     this.invalidOpcode = false;
     this.stackUnderflow = false;
     this.stackOverflow = false;
-    this.outOfMemoryExpansion = false;
+    this.memoryExpansion = false;
     this.outOfGas = false;
     this.returnDataCopyFault = false;
     this.jumpFault = false;
-    this.staticFault = false;
-    this.outOfSStore = false;
+    this.staticException = false;
+    this.sstore = false;
     this.invalidCodePrefix = false;
     this.codeSizeOverflow = false;
   }
@@ -160,12 +160,12 @@ public final class Exceptions {
         invalidOpcode,
         stackUnderflow,
         stackOverflow,
-        outOfMemoryExpansion,
+        memoryExpansion,
         outOfGas,
         returnDataCopyFault,
         jumpFault,
-        staticFault,
-        outOfSStore,
+        staticException,
+        sstore,
         invalidCodePrefix,
         codeSizeOverflow);
   }
@@ -177,12 +177,12 @@ public final class Exceptions {
     return this.invalidOpcode
         || this.stackUnderflow
         || this.stackOverflow
-        || this.outOfMemoryExpansion
+        || this.memoryExpansion
         || this.outOfGas
         || this.returnDataCopyFault
         || this.jumpFault
-        || this.staticFault
-        || this.outOfSStore
+        || this.staticException
+        || this.sstore
         || this.invalidCodePrefix
         || this.codeSizeOverflow;
   }
@@ -232,7 +232,7 @@ public final class Exceptions {
   }
 
   private static boolean isJumpFault(final MessageFrame frame, OpCode opCode) {
-    if (opCode == OpCode.JUMP || opCode == OpCode.JUMPI) {
+    if (opCode.isJump()) {
       final long target = Words.clampedToLong(frame.getStackItem(0));
       final boolean invalidDestination = frame.getCode().isJumpDestInvalid((int) target);
 
@@ -319,8 +319,8 @@ public final class Exceptions {
       return;
     }
 
-    this.staticFault = isStaticFault(frame, opCodeData);
-    if (this.staticFault) {
+    this.staticException = isStaticFault(frame, opCodeData);
+    if (this.staticException) {
       return;
     }
 
@@ -351,8 +351,8 @@ public final class Exceptions {
           MLOAD,
           MSTORE,
           MSTORE8 -> {
-        this.outOfMemoryExpansion = isMemoryExpansionFault(frame, opCode, gp);
-        if (this.outOfMemoryExpansion) {
+        this.memoryExpansion = isMemoryExpansionFault(frame, opCode, gp);
+        if (this.memoryExpansion) {
           return;
         }
 
@@ -367,8 +367,8 @@ public final class Exceptions {
           return;
         }
 
-        this.outOfMemoryExpansion = isMemoryExpansionFault(frame, opCode, gp);
-        if (this.outOfMemoryExpansion) {
+        this.memoryExpansion = isMemoryExpansionFault(frame, opCode, gp);
+        if (this.memoryExpansion) {
           return;
         }
 
@@ -390,8 +390,8 @@ public final class Exceptions {
         }
       }
       case SSTORE -> {
-        this.outOfSStore = isOutOfSStore(frame, opCode);
-        if (this.outOfSStore) {
+        this.sstore = isOutOfSStore(frame, opCode);
+        if (this.sstore) {
           return;
         }
 

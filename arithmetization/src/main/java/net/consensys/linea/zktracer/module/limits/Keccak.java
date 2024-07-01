@@ -95,11 +95,11 @@ public class Keccak implements Module {
 
       // Capture contract deployment
       // TODO: compute the gas cost if we are under deployment.
-      if (opCode == OpCode.RETURN && hub.currentFrame().underDeployment()) {
+      if (opCode == OpCode.RETURN && hub.currentFrame().isDeployment()) {
         callShakira(frame, 0, 1, this.deployedCodeSizes);
       }
 
-      if (opCode == OpCode.CREATE2 && pch.aborts().none()) {
+      if (opCode == OpCode.CREATE2 && pch.abortingConditions().none()) {
         callShakira(frame, 1, 2, this.create2Sizes);
       }
     }

@@ -26,12 +26,14 @@ import net.consensys.linea.zktracer.types.Bytecode;
 import org.hyperledger.besu.datatypes.Address;
 import org.hyperledger.besu.datatypes.Wei;
 import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.worldstate.WorldView;
 
 @AllArgsConstructor
 @Getter
 @Setter
 @Accessors(fluent = true)
 public class AccountSnapshot {
+  // TODO: we require a MARKED_FOR_SELFDESTRUCT boolean
   private Address address;
   private long nonce;
   private Wei balance;
@@ -53,9 +55,9 @@ public class AccountSnapshot {
     return this;
   }
 
-  public AccountSnapshot incrementNonce() {
-    this.nonce++;
-    return this;
+  public static AccountSnapshot fromWorld(WorldView world, Address address) {
+    final Account account = world.get(address);
+    return fromAccount(account, true, 0, false); // TODO: implement warm, depNumber and Status
   }
 
   public static AccountSnapshot fromAccount(
@@ -67,6 +69,12 @@ public class AccountSnapshot {
       boolean isWarm, int deploymentNumber, boolean deploymentStatus) {
     return new AccountSnapshot(
         Address.ZERO, 0, Wei.ZERO, isWarm, Bytecode.EMPTY, deploymentNumber, deploymentStatus);
+  }
+
+  public static AccountSnapshot fromAddress(
+      Address address, boolean isWarm, int deploymentNumber, boolean deploymentStatus) {
+    return new AccountSnapshot(
+        address, 0, Wei.ZERO, isWarm, Bytecode.EMPTY, deploymentNumber, deploymentStatus);
   }
 
   public static AccountSnapshot fromAccount(
@@ -86,17 +94,6 @@ public class AccountSnapshot {
         .orElseGet(() -> AccountSnapshot.empty(isWarm, deploymentNumber, deploymentStatus));
   }
 
-  public AccountSnapshot debit(Wei quantity) {
-    return new AccountSnapshot(
-        this.address,
-        this.nonce + 1,
-        this.balance.subtract(quantity),
-        this.isWarm,
-        this.code,
-        this.deploymentNumber,
-        this.deploymentStatus);
-  }
-
   public AccountSnapshot debit(Wei quantity, boolean isWarm) {
     return new AccountSnapshot(
         this.address,
@@ -108,20 +105,11 @@ public class AccountSnapshot {
         this.deploymentStatus);
   }
 
-  public AccountSnapshot deploy(Wei value) {
-    return new AccountSnapshot(
-        this.address,
-        this.nonce + 1,
-        this.balance.add(value),
-        this.isWarm,
-        this.code,
-        this.deploymentNumber + 1,
-        this.deploymentStatus);
-  }
-
-  public AccountSnapshot deploy(Wei value, Bytecode code) {
+  // TODO: does this update the deployment number in the deploymentInfo object ?
+  public AccountSnapshot initiateDeployment(Wei value, Bytecode code) {
     Preconditions.checkState(
-        !this.deploymentStatus, "Deployment status should be false before deploying.");
+        !this.deploymentStatus,
+        "Deployment status should be false before initiating a deployment.");
     return new AccountSnapshot(
         this.address,
         this.nonce + 1,
@@ -132,15 +120,12 @@ public class AccountSnapshot {
         true);
   }
 
-  public AccountSnapshot credit(Wei value) {
+  public AccountSnapshot deployByteCode(Bytecode code) {
+    Preconditions.checkState(
+        this.deploymentStatus, "Deployment status should be true before deploying byte code.");
+
     return new AccountSnapshot(
-        this.address,
-        this.nonce,
-        this.balance.add(value),
-        true,
-        this.code,
-        this.deploymentNumber,
-        this.deploymentStatus);
+        this.address, this.nonce, this.balance, true, code, this.deploymentNumber, false);
   }
 
   public AccountSnapshot credit(Wei value, boolean isWarm) {

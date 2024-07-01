@@ -23,8 +23,8 @@ import lombok.extern.slf4j.Slf4j;
 import net.consensys.linea.zktracer.ColumnHeader;
 import net.consensys.linea.zktracer.container.stacked.set.StackedSet;
 import net.consensys.linea.zktracer.module.Module;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.exp.ExpCallForExpPricing;
-import net.consensys.linea.zktracer.module.hub.fragment.imc.call.exp.ExpCallForModexpLogComputation;
+import net.consensys.linea.zktracer.module.hub.Hub;
+import net.consensys.linea.zktracer.module.hub.fragment.imc.call.exp.ExpCall;
 import net.consensys.linea.zktracer.module.wcp.Wcp;
 
 @Slf4j
@@ -34,6 +34,7 @@ public class Exp implements Module {
   private final StackedSet<ExpOperation> chunks = new StackedSet<>();
 
   private final Wcp wcp;
+  private final Hub hub;
 
   @Override
   public String moduleKey() {
@@ -60,12 +61,8 @@ public class Exp implements Module {
     return Trace.headers(this.lineCount());
   }
 
-  public void callExpLogCall(final ExpCallForExpPricing c) {
-    this.chunks.add(ExpLogOperation.fromExpLogCall(this.wcp, c));
-  }
-
-  public void callModExpLogCall(final ExpCallForModexpLogComputation c) {
-    this.chunks.add(ModexpLogOperation.fromExpLogCall(this.wcp, c));
+  public void call(ExpCall expCall) {
+    this.chunks.add(new ExpOperation(expCall, wcp, hub));
   }
 
   @Override

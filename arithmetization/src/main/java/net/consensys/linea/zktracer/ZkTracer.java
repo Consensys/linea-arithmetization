@@ -225,7 +225,7 @@ public class ZkTracer implements ConflationAwareOperationTracer {
     try {
       hashOfLastTransactionTraced = transaction.getHash();
       this.pin55.ifPresent(x -> x.tracePrepareTx(worldView, transaction));
-      this.hub.traceStartTx(worldView, transaction);
+      this.hub.traceStartTransaction(worldView, transaction);
     } catch (final Exception e) {
       this.tracingExceptions.add(e);
     }
@@ -242,7 +242,7 @@ public class ZkTracer implements ConflationAwareOperationTracer {
       long timeNs) {
     try {
       this.pin55.ifPresent(x -> x.traceEndTx(worldView, tx, status, output, logs, gasUsed));
-      this.hub.traceEndTx(worldView, tx, status, output, logs, gasUsed);
+      this.hub.traceEndTransaction(worldView, tx, status, logs, selfDestructs);
     } catch (final Exception e) {
       this.tracingExceptions.add(e);
     }
@@ -252,7 +252,7 @@ public class ZkTracer implements ConflationAwareOperationTracer {
   public void tracePreExecution(final MessageFrame frame) {
     if (frame.getCode().getSize() > 0) {
       try {
-        this.hub.tracePreOpcode(frame);
+        this.hub.tracePreExecution(frame);
         this.pin55.ifPresent(x -> x.tracePreOpcode(frame));
       } catch (final Exception e) {
         this.tracingExceptions.add(e);

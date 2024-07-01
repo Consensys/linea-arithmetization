@@ -26,9 +26,7 @@ import net.consensys.linea.zktracer.ColumnHeader;
 import net.consensys.linea.zktracer.container.stacked.set.StackedSet;
 import net.consensys.linea.zktracer.module.Module;
 import net.consensys.linea.zktracer.module.wcp.Wcp;
-import org.apache.tuweni.bytes.Bytes;
-import org.hyperledger.besu.datatypes.Transaction;
-import org.hyperledger.besu.evm.log.Log;
+import net.consensys.linea.zktracer.types.TransactionProcessingMetadata;
 import org.hyperledger.besu.evm.worldstate.WorldView;
 
 @RequiredArgsConstructor
@@ -73,18 +71,12 @@ public class ShakiraData implements Module {
   }
 
   @Override
-  public void traceStartTx(WorldView worldView, Transaction tx) {
+  public void traceStartTx(WorldView worldView, TransactionProcessingMetadata tx) {
     this.numberOfOperationsAtStartTx = operations.size();
   }
 
   @Override
-  public void traceEndTx(
-      WorldView worldView,
-      Transaction tx,
-      boolean isSuccessful,
-      Bytes output,
-      List<Log> logs,
-      long gasUsed) {
+  public void traceEndTx(TransactionProcessingMetadata tx) {
     final List<ShakiraDataOperation> newOperations =
         new ArrayList<>(this.operations.sets.getLast());
     newOperations.sort(comparator);

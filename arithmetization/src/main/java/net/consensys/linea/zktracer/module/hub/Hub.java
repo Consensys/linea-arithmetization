@@ -15,18 +15,18 @@
 
 package net.consensys.linea.zktracer.module.hub;
 
+import static net.consensys.linea.zktracer.module.hub.HubProcessingPhase.*;
+import static net.consensys.linea.zktracer.module.hub.Trace.MULTIPLIER___STACK_HEIGHT;
+import static net.consensys.linea.zktracer.types.AddressUtils.addressFromBytes;
 import static net.consensys.linea.zktracer.types.AddressUtils.effectiveToAddress;
-import static net.consensys.linea.zktracer.types.AddressUtils.isPrecompile;
-import static net.consensys.linea.zktracer.types.AddressUtils.precompileAddress;
+import static net.consensys.linea.zktracer.types.AddressUtils.getCreateAddress;
 
 import java.nio.MappedByteBuffer;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import com.google.common.base.Preconditions;
@@ -34,7 +34,6 @@ import lombok.Getter;
 import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
 import net.consensys.linea.zktracer.ColumnHeader;
-import net.consensys.linea.zktracer.ZkTracer;
 import net.consensys.linea.zktracer.module.Module;
 import net.consensys.linea.zktracer.module.add.Add;
 import net.consensys.linea.zktracer.module.bin.Bin;
@@ -51,8 +50,14 @@ import net.consensys.linea.zktracer.module.hub.fragment.imc.ImcFragment;
 import net.consensys.linea.zktracer.module.hub.fragment.scenario.ScenarioFragment;
 import net.consensys.linea.zktracer.module.hub.precompiles.PrecompileInvocation;
 import net.consensys.linea.zktracer.module.hub.section.*;
+import net.consensys.linea.zktracer.module.hub.section.TxFinalizationPostTxDefer;
+import net.consensys.linea.zktracer.module.hub.section.TxPreWarmingMacroSection;
+import net.consensys.linea.zktracer.module.hub.section.TxSkippedSectionDefers;
+import net.consensys.linea.zktracer.module.hub.section.calls.FailedCallSection;
+import net.consensys.linea.zktracer.module.hub.section.calls.NoCodeCallSection;
+import net.consensys.linea.zktracer.module.hub.section.calls.SmartContractCallSection;
+import net.consensys.linea.zktracer.module.hub.signals.Exceptions;
 import net.consensys.linea.zktracer.module.hub.signals.PlatformController;
-import net.consensys.linea.zktracer.module.hub.transients.DeploymentInfo;
 import net.consensys.linea.zktracer.module.hub.transients.Transients;
 import net.consensys.linea.zktracer.module.limits.Keccak;
 import net.consensys.linea.zktracer.module.limits.L2Block;
@@ -78,6 +83,7 @@ import net.consensys.linea.zktracer.module.rlpaddr.RlpAddr;
 import net.consensys.linea.zktracer.module.rlptxn.RlpTxn;
 import net.consensys.linea.zktracer.module.rlptxrcpt.RlpTxrcpt;
 import net.consensys.linea.zktracer.module.rom.Rom;
+import net.consensys.linea.zktracer.module.romlex.ContractMetadata;
 import net.consensys.linea.zktracer.module.romlex.RomLex;
 import net.consensys.linea.zktracer.module.shakiradata.ShakiraData;
 import net.consensys.linea.zktracer.module.shf.Shf;
@@ -90,21 +96,13 @@ import net.consensys.linea.zktracer.module.txndata.TxnData;
 import net.consensys.linea.zktracer.module.wcp.Wcp;
 import net.consensys.linea.zktracer.opcode.*;
 import net.consensys.linea.zktracer.opcode.gas.projector.GasProjector;
-import net.consensys.linea.zktracer.runtime.LogInvocation;
 import net.consensys.linea.zktracer.runtime.callstack.CallFrame;
 import net.consensys.linea.zktracer.runtime.callstack.CallFrameType;
 import net.consensys.linea.zktracer.runtime.callstack.CallStack;
 import net.consensys.linea.zktracer.runtime.stack.StackContext;
 import net.consensys.linea.zktracer.runtime.stack.StackLine;
-import net.consensys.linea.zktracer.types.AddressUtils;
-import net.consensys.linea.zktracer.types.Bytecode;
-import net.consensys.linea.zktracer.types.EWord;
-import net.consensys.linea.zktracer.types.Precompile;
-import net.consensys.linea.zktracer.types.TxState;
+import net.consensys.linea.zktracer.types.*;
 import org.apache.tuweni.bytes.Bytes;
-import org.apache.tuweni.bytes.Bytes32;
-import org.apache.tuweni.units.bigints.UInt256;
-import org.hyperledger.besu.datatypes.AccessListEntry;
 import org.hyperledger.besu.datatypes.Address;
 import org.hyperledger.besu.datatypes.Transaction;
 import org.hyperledger.besu.datatypes.Wei;
@@ -123,13 +121,10 @@ import org.hyperledger.besu.plugin.data.ProcessableBlockHeader;
 @Slf4j
 @Accessors(fluent = true)
 public class Hub implements Module {
-
-  private static final int TAU = 8;
-
   public static final GasProjector GAS_PROJECTOR = new GasProjector();
 
   /** accumulate the trace information for the Hub */
-  @Getter private final State state = new State();
+  @Getter public final State state = new State();
 
   /** contain the factories for trace segments that need complex initialization */
   @Getter private final Factories factories;
@@ -143,6 +138,7 @@ public class Hub implements Module {
    */
   @Getter CallStack callStack = new CallStack();
 
+  /** Stores the transaction Metadata of all the transaction of the conflated block */
   @Getter TransactionStack txStack = new TransactionStack();
 
   /** Stores all the actions that must be deferred to a later time */
@@ -150,6 +146,8 @@ public class Hub implements Module {
 
   /** stores all data related to failure states & module activation */
   @Getter private final PlatformController pch;
+
+  private boolean previousOperationWasCallToEcPrecompile;
 
   @Override
   public String moduleKey() {
@@ -167,175 +165,60 @@ public class Hub implements Module {
     this.state.commit(trace);
   }
 
-  public int stamp() {
-    return this.state.stamps().hub();
+  @Override
+  public int lineCount() {
+    return this.state.lineCount();
   }
 
-  public OpCodeData opCodeData() {
-    return this.currentFrame().opCodeData();
-  }
+  /** List of all modules of the ZK-evm */
+  // stateless modules
+  @Getter private final Wcp wcp = new Wcp();
 
-  public OpCode opCode() {
-    return this.currentFrame().opCode();
-  }
-
-  TraceSection currentTraceSection() {
-    return this.state.currentTxTrace().currentSection();
-  }
-
-  public int lastPc() {
-    if (this.state.currentTxTrace().isEmpty()) {
-      return 0;
-    } else {
-      return this.state.currentTxTrace().currentSection().pc();
-    }
-  }
-
-  public int lastContextNumber() {
-    if (this.state.currentTxTrace().isEmpty()) {
-      return 0;
-    } else {
-      return this.state.currentTxTrace().currentSection().contextNumber();
-    }
-  }
-
-  public void addTraceSection(TraceSection section) {
-    section.seal(this);
-    this.state.currentTxTrace().add(section);
-  }
-
-  @Getter private final Wcp wcp = new Wcp(this);
-  private final Module add = new Add(this);
-  private final Module bin = new Bin(this);
-  private final Blake2fModexpData blake2fModexpData = new Blake2fModexpData(this.wcp);
-  @Getter private final EcData ecData;
+  private final Module add = new Add();
+  private final Module bin = new Bin();
   private final Blockdata blockdata;
   private final Blockhash blockhash = new Blockhash(wcp);
   private final Euc euc;
   private final Ext ext = new Ext(this);
-  private final Module mul = new Mul(this);
   private final Mod mod = new Mod();
+  private final Module mul = new Mul(this);
   private final Module shf = new Shf();
-  private final RlpTxn rlpTxn;
-  private final Module mxp;
-  private final Mmio mmio;
+  private final Trm trm = new Trm();
 
-  @Getter private final Exp exp;
-  @Getter private final Mmu mmu;
+  // other
+  private final RlpTxn rlpTxn;
+  private final Rom rom;
+  @Getter private final RomLex romLex;
   private final RlpTxrcpt rlpTxrcpt;
   private final LogInfo logInfo;
   private final LogData logData;
-  private final Trm trm = new Trm();
+  private final Mmio mmio;
   private final RlpAddr rlpAddr = new RlpAddr(this, trm);
-  private final Rom rom;
-
-  @Getter private final RomLex romLex;
   private final TxnData txnData;
-  private final ShakiraData shakiraData = new ShakiraData(this.wcp);
-  private final ModexpEffectiveCall modexpEffectiveCall;
-  private final Stp stp = new Stp(this, wcp, mod);
-  private final L2Block l2Block;
 
+  // modules triggered by sub-fragments of the MISCELLANEOUS / IMC perspective
+  @Getter private final Stp stp = new Stp(wcp, mod);
+  @Getter private final Exp exp;
+  @Getter private final Mmu mmu;
+  @Getter private final Mxp mxp;
   @Getter private final Oob oob;
 
-  private final List<Module> modules;
+  // precompile-linked modules
+  private final Blake2fModexpData blake2fModexpData = new Blake2fModexpData(this.wcp);
+  @Getter private final EcData ecData;
+  private final ModexpEffectiveCall modexpEffectiveCall;
+  private final ShakiraData shakiraData = new ShakiraData(this.wcp);
   /*
    * Those modules are not traced, we just compute the number of calls to those
    * precompile to meet the prover limits
    */
   private final List<Module> precompileLimitModules;
+  private final L2Block l2Block;
+
+  private final List<Module> modules;
+
+  // reference table modules
   private final List<Module> refTableModules;
-
-  private boolean previousOperationWasCallToEcPrecompile;
-
-  public Hub(final Address l2l1ContractAddress, final Bytes l2l1Topic) {
-    this.l2Block = new L2Block(l2l1ContractAddress, LogTopic.of(l2l1Topic));
-    this.transients = new Transients(this);
-    this.factories = new Factories(this);
-
-    this.pch = new PlatformController(this);
-    this.mxp = new Mxp(this);
-    this.exp = new Exp(this.wcp);
-    this.romLex = new RomLex(this);
-    this.rom = new Rom(this.romLex);
-    this.rlpTxn = new RlpTxn(this.romLex);
-    this.euc = new Euc(this.wcp);
-    this.txnData = new TxnData(this, this.romLex, this.wcp, this.euc);
-    this.blockdata = new Blockdata(this.wcp, this.txnData, this.rlpTxn);
-    this.rlpTxrcpt = new RlpTxrcpt(txnData);
-    this.logData = new LogData(rlpTxrcpt);
-    this.logInfo = new LogInfo(rlpTxrcpt);
-    this.ecData = new EcData(this, this.wcp, this.ext);
-    this.oob = new Oob(this, (Add) this.add, this.mod, this.wcp);
-    this.mmu =
-        new Mmu(
-            this.euc,
-            this.wcp,
-            this.romLex,
-            this.rlpTxn,
-            this.rlpTxrcpt,
-            this.ecData,
-            this.blake2fModexpData,
-            this.callStack);
-    this.mmio = new Mmio(this.mmu);
-
-    final EcRecoverEffectiveCall ecRec = new EcRecoverEffectiveCall(this);
-    this.modexpEffectiveCall = new ModexpEffectiveCall(this, this.blake2fModexpData);
-    final EcPairingCallEffectiveCall ecPairingCall = new EcPairingCallEffectiveCall(this);
-    final L2Block l2Block = new L2Block(l2l1ContractAddress, LogTopic.of(l2l1Topic));
-
-    this.precompileLimitModules =
-        List.of(
-            new Sha256Blocks(this, shakiraData),
-            ecRec,
-            new RipeMd160Blocks(this, shakiraData),
-            this.modexpEffectiveCall,
-            new EcAddEffectiveCall(this),
-            new EcMulEffectiveCall(this),
-            ecPairingCall,
-            new EcPairingMillerLoop(ecPairingCall),
-            new Blake2fRounds(this, this.blake2fModexpData),
-            // Block level limits
-            l2Block,
-            new Keccak(this, ecRec, l2Block, shakiraData),
-            new L2L1Logs(l2Block));
-
-    this.refTableModules = List.of(new BinRt(), new InstructionDecoder(), new ShfRt());
-
-    this.modules =
-        Stream.concat(
-                Stream.of(
-                    this.add,
-                    this.bin,
-                    this.blake2fModexpData,
-                    this.blockdata,
-                    this.blockhash,
-                    this.ecData,
-                    this.euc,
-                    this.ext,
-                    this.logData,
-                    this.logInfo,
-                    this.mmio,
-                    this.mmu,
-                    this.mod,
-                    this.mul,
-                    this.mxp,
-                    this.oob,
-                    this.exp,
-                    this.rlpAddr,
-                    this.rlpTxn,
-                    this.rom,
-                    this.romLex,
-                    this.shakiraData,
-                    this.shf,
-                    this.stp,
-                    this.trm,
-                    this.wcp, /* WARN: must be called BEFORE txnData */
-                    this.txnData,
-                    this.rlpTxrcpt /* WARN: must be called AFTER txnData */),
-                this.precompileLimitModules.stream())
-            .toList();
-  }
 
   /**
    * @return a list of all modules for which to generate traces
@@ -417,237 +300,476 @@ public class Hub implements Module {
         .toList();
   }
 
-  /**
-   * Traces a skipped transaction, i.e. a “pure” transaction without EVM execution.
-   *
-   * @param world a view onto the state
-   */
-  void processStateSkip(WorldView world) {
-    this.state.stamps().incrementHubStamp();
-    final boolean isDeployment = this.transients.tx().besuTx().getTo().isEmpty();
+  public Hub(final Address l2l1ContractAddress, final Bytes l2l1Topic) {
+    this.l2Block = new L2Block(l2l1ContractAddress, LogTopic.of(l2l1Topic));
+    this.transients = new Transients(this);
+    this.factories = new Factories(this);
 
-    //
-    // 3 sections -- account changes
-    //
-    // From account information
-    final Address fromAddress = this.transients.tx().besuTx().getSender();
-    final AccountSnapshot oldFromAccount =
-        AccountSnapshot.fromAccount(
-            world.get(fromAddress),
-            isPrecompile(fromAddress),
-            this.transients.conflation().deploymentInfo().number(fromAddress),
-            false);
+    this.pch = new PlatformController(this);
+    this.mxp = new Mxp(this);
+    this.exp = new Exp(this.wcp, this);
+    this.romLex = new RomLex(this);
+    this.rom = new Rom(this.romLex);
+    this.rlpTxn = new RlpTxn(this.romLex);
+    this.euc = new Euc(this.wcp);
+    this.txnData = new TxnData(this.wcp, this.euc);
+    this.blockdata = new Blockdata(this.wcp, this.txnData, this.rlpTxn);
+    this.rlpTxrcpt = new RlpTxrcpt(txnData);
+    this.logData = new LogData(rlpTxrcpt);
+    this.logInfo = new LogInfo(rlpTxrcpt);
+    this.ecData = new EcData(this, this.wcp, this.ext);
+    this.oob = new Oob(this, (Add) this.add, this.mod, this.wcp);
+    this.mmu =
+        new Mmu(
+            this.euc,
+            this.wcp,
+            this.romLex,
+            this.rlpTxn,
+            this.rlpTxrcpt,
+            this.ecData,
+            this.blake2fModexpData,
+            this.callStack);
+    this.mmio = new Mmio(this.mmu);
 
-    // To account information
-    final Address toAddress = effectiveToAddress(this.transients.tx().besuTx());
-    if (isDeployment) {
-      this.transients.conflation().deploymentInfo().deploy(toAddress);
+    final EcRecoverEffectiveCall ecRec = new EcRecoverEffectiveCall(this);
+    this.modexpEffectiveCall = new ModexpEffectiveCall(this, this.blake2fModexpData);
+    final EcPairingCallEffectiveCall ecPairingCall = new EcPairingCallEffectiveCall(this);
+    final L2Block l2Block = new L2Block(l2l1ContractAddress, LogTopic.of(l2l1Topic));
+
+    this.precompileLimitModules =
+        List.of(
+            new Sha256Blocks(this, shakiraData),
+            ecRec,
+            new RipeMd160Blocks(this, shakiraData),
+            this.modexpEffectiveCall,
+            new EcAddEffectiveCall(this),
+            new EcMulEffectiveCall(this),
+            ecPairingCall,
+            new EcPairingMillerLoop(ecPairingCall),
+            new Blake2fRounds(this, this.blake2fModexpData),
+            // Block level limits
+            l2Block,
+            new Keccak(this, ecRec, l2Block, shakiraData),
+            new L2L1Logs(l2Block));
+
+    this.refTableModules = List.of(new BinRt(), new InstructionDecoder(), new ShfRt());
+
+    this.modules =
+        Stream.concat(
+                Stream.of(
+                    this.add,
+                    this.bin,
+                    this.blake2fModexpData,
+                    this.blockhash,
+                    this.ecData,
+                    this.euc,
+                    this.ext,
+                    this.logData,
+                    this.logInfo,
+                    this.mmio,
+                    this.mmu,
+                    this.mod,
+                    this.mul,
+                    this.mxp,
+                    this.oob,
+                    this.exp,
+                    this.rlpAddr,
+                    this.rlpTxn,
+                    this.rom,
+                    this.romLex,
+                    this.shakiraData,
+                    this.shf,
+                    this.stp,
+                    this.trm,
+                    this.wcp, /* WARN: must be called BEFORE txnData */
+                    this.txnData,
+                    this.blockdata, /* WARN: must be called AFTER txnData */
+                    this.rlpTxrcpt /* WARN: must be called AFTER txnData */),
+                this.precompileLimitModules.stream())
+            .toList();
+  }
+
+  @Override
+  public void enterTransaction() {
+    for (Module m : this.modules) {
+      m.enterTransaction();
     }
-    final AccountSnapshot oldToAccount =
-        AccountSnapshot.fromAccount(
-            world.get(toAddress),
-            isPrecompile(toAddress),
+  }
+
+  @Override
+  public void popTransaction() {
+    this.txStack.pop();
+    this.state.pop();
+    for (Module m : this.modules) {
+      m.popTransaction();
+    }
+  }
+
+  /** Tracing Operation, triggered by Besu hook */
+  @Override
+  public void traceStartConflation(long blockCount) {
+    for (Module m : this.modules) {
+      m.traceStartConflation(blockCount);
+    }
+  }
+
+  @Override
+  public void traceEndConflation(final WorldView world) {
+    this.romLex.determineCodeFragmentIndex();
+    this.txStack.setCodeFragmentIndex(this);
+    this.defers.runPostConflation(this, world);
+
+    for (Module m : this.modules) {
+      m.traceEndConflation(world);
+    }
+  }
+
+  @Override
+  public void traceStartBlock(final ProcessableBlockHeader processableBlockHeader) {
+    this.state.firstAndLastStorageSlotOccurrences.add(new HashMap<>());
+    this.transients().block().update(processableBlockHeader);
+    this.txStack.resetBlock();
+    for (Module m : this.modules) {
+      m.traceStartBlock(processableBlockHeader);
+    }
+  }
+
+  @Override
+  public void traceEndBlock(final BlockHeader blockHeader, final BlockBody blockBody) {
+    for (Module m : this.modules) {
+      m.traceEndBlock(blockHeader, blockBody);
+    }
+  }
+
+  public void traceStartTransaction(final WorldView world, final Transaction tx) {
+    this.pch.reset();
+    this.state.enter();
+    this.txStack.enterTransaction(world, tx, transients.block());
+    this.defers.postTx(this.state.currentTxTrace());
+
+    this.enterTransaction();
+
+    if (!this.txStack.current().requiresEvmExecution()) {
+      this.state.setProcessingPhase(TX_SKIP);
+      this.state.stamps().incrementHubStamp();
+      this.defers.postTx(
+          new TxSkippedSectionDefers(world, this.txStack.current(), this.transients));
+    } else {
+      if (this.txStack.current().requiresPrewarming()) {
+        this.state.setProcessingPhase(TX_WARM);
+        new TxPreWarmingMacroSection(world, this);
+      }
+
+      new TxInitializationSection(this, world);
+    }
+
+    /*
+     * TODO: the ID = 0 (universal parent context) context should
+     * 1. be shared by all transactions in a conflation (OK)
+     * 2. should be the father of all root contexts
+     * 3. should have the current root context as its lastCallee()
+     */
+    this.callStack.getById(0).universalParentReturnDataContextNumber(this.stamp() + 1);
+
+    for (Module m : this.modules) {
+      m.traceStartTx(world, this.txStack().current());
+    }
+  }
+
+  public void traceEndTransaction(
+      WorldView world,
+      Transaction tx,
+      boolean isSuccessful,
+      List<Log> logs,
+      Set<Address> selfDestructs) {
+    this.txStack
+        .current()
+        .completeLineaTransaction(
+            world,
+            isSuccessful,
+            this.state.stamps().hub(),
+            this.state().getProcessingPhase(),
+            logs,
+            selfDestructs);
+
+    if (!(this.state.getProcessingPhase() == TX_SKIP)) {
+      this.state.stamps().incrementHubStamp();
+    }
+
+    this.defers.runPostTx(this, world, tx, isSuccessful);
+
+    for (Module m : this.modules) {
+      m.traceEndTx(txStack.current());
+    }
+  }
+
+  @Override
+  public void traceContextEnter(MessageFrame frame) {
+    this.pch.reset();
+
+    if (frame.getDepth() == 0) {
+      // Bedrock...
+      final TransactionProcessingMetadata currentTx = transients().tx();
+      final Address toAddress = effectiveToAddress(currentTx.getBesuTransaction());
+      final boolean isDeployment = this.transients.tx().getBesuTransaction().getTo().isEmpty();
+
+      final boolean shouldCopyTxCallData =
+          !isDeployment && !frame.getInputData().isEmpty() && currentTx.requiresEvmExecution();
+      // TODO simplify this, the same bedRock context ( = root context ??) seems to be
+      // generated in
+      // both case
+      if (shouldCopyTxCallData) {
+        this.callStack.newMantleAndBedrock(
+            this.state.stamps().hub(),
+            this.transients.tx().getBesuTransaction().getSender(),
+            toAddress,
+            CallFrameType.MANTLE,
+            new Bytecode(
+                toAddress == null
+                    ? this.transients.tx().getBesuTransaction().getData().orElse(Bytes.EMPTY)
+                    : Optional.ofNullable(frame.getWorldUpdater().get(toAddress))
+                        .map(AccountState::getCode)
+                        .orElse(Bytes.EMPTY)),
+            Wei.of(this.transients.tx().getBesuTransaction().getValue().getAsBigInteger()),
+            this.transients.tx().getBesuTransaction().getGasLimit(),
+            this.transients.tx().getBesuTransaction().getData().orElse(Bytes.EMPTY),
             this.transients.conflation().deploymentInfo().number(toAddress),
-            false);
+            toAddress.isEmpty()
+                ? 0
+                : this.transients.conflation().deploymentInfo().number(toAddress),
+            this.transients.conflation().deploymentInfo().isDeploying(toAddress));
+      } else {
+        this.callStack.newBedrock(
+            this.state.stamps().hub(),
+            this.txStack.current().getBesuTransaction().getSender(),
+            toAddress,
+            CallFrameType.BEDROCK,
+            new Bytecode(
+                toAddress == null
+                    ? this.transients.tx().getBesuTransaction().getData().orElse(Bytes.EMPTY)
+                    : Optional.ofNullable(frame.getWorldUpdater().get(toAddress))
+                        .map(AccountState::getCode)
+                        .orElse(Bytes.EMPTY)),
+            Wei.of(this.transients.tx().getBesuTransaction().getValue().getAsBigInteger()),
+            this.transients.tx().getBesuTransaction().getGasLimit(),
+            this.transients.tx().getBesuTransaction().getData().orElse(Bytes.EMPTY),
+            this.transients.conflation().deploymentInfo().number(toAddress),
+            toAddress.isEmpty()
+                ? 0
+                : this.transients.conflation().deploymentInfo().number(toAddress),
+            this.transients.conflation().deploymentInfo().isDeploying(toAddress));
+      }
+    } else {
+      // ...or CALL
+      final boolean isDeployment = frame.getType() == MessageFrame.Type.CONTRACT_CREATION;
+      final Address codeAddress = frame.getContractAddress();
+      final CallFrameType frameType =
+          frame.isStatic() ? CallFrameType.STATIC : CallFrameType.STANDARD;
+      if (isDeployment) {
+        this.transients.conflation().deploymentInfo().markDeploying(codeAddress);
+      }
+      final int codeDeploymentNumber =
+          this.transients.conflation().deploymentInfo().number(codeAddress);
 
-    // Miner account information
-    final Address minerAddress = this.transients.block().minerAddress();
+      final int callDataOffsetStackArgument =
+          callStack.current().opCode().callMayNotTransferValue() ? 2 : 3;
 
-    final AccountSnapshot oldMinerAccount =
-        AccountSnapshot.fromAccount(
-            world.get(minerAddress),
-            isPrecompile(minerAddress),
-            this.transients
-                .conflation()
-                .deploymentInfo()
-                .number(this.transients.block().minerAddress()),
-            false);
+      final long callDataOffset =
+          isDeployment
+              ? 0
+              : Words.clampedToLong(
+                  callStack.current().frame().getStackItem(callDataOffsetStackArgument));
 
-    // Putatively updateCallerReturnData deployment number
-    this.defers.postTx(
-        new SkippedPostTransactionDefer(
-            oldFromAccount,
-            oldToAccount,
-            oldMinerAccount,
-            this.transients.tx().gasPrice(),
-            this.transients.block().baseFee()));
+      final long callDataSize =
+          isDeployment
+              ? 0
+              : Words.clampedToLong(
+                  callStack.current().frame().getStackItem(callDataOffsetStackArgument + 1));
+
+      final long callDataContextNumber = this.callStack.current().contextNumber();
+
+      this.callStack.enter(
+          this.state.stamps().hub(),
+          frame.getRecipientAddress(),
+          frame.getContractAddress(),
+          frame.getRecipientAddress(), // TODO: this is likely false
+          new Bytecode(frame.getCode().getBytes()),
+          frameType,
+          frame.getValue(),
+          frame.getRemainingGas(),
+          frame.getInputData(),
+          callDataOffset,
+          callDataSize,
+          callDataContextNumber,
+          this.transients.conflation().deploymentInfo().number(codeAddress),
+          codeDeploymentNumber,
+          isDeployment);
+
+      this.defers.runNextContext(this, frame);
+
+      for (Module m : this.modules) {
+        m.traceContextEnter(frame);
+      }
+    }
   }
 
-  /**
-   * Traces the isWarm-up information of a transaction
-   *
-   * @param world a view onto the state
-   */
-  void processStateWarm(WorldView world) {
-    this.transients
-        .tx()
-        .besuTx()
-        .getAccessList()
-        .ifPresent(
-            preWarmed -> {
-              if (!preWarmed.isEmpty()) {
-                Set<Address> seenAddresses = new HashSet<>(precompileAddress);
-                this.state.stamps().incrementHubStamp();
-
-                Map<Address, Set<Bytes32>> seenKeys = new HashMap<>();
-                List<TraceFragment> fragments = new ArrayList<>();
-
-                final TransactionStack.MetaTransaction tx = this.transients.tx();
-                final Transaction besuTx = tx.besuTx();
-                final Address senderAddress = besuTx.getSender();
-                final Address receiverAddress = effectiveToAddress(besuTx);
-
-                for (AccessListEntry entry : preWarmed) {
-                  this.state.stamps().incrementHubStamp();
-
-                  final Address address = entry.address();
-                  if (senderAddress.equals(address)) {
-                    tx.isSenderPreWarmed(true);
-                  }
-
-                  if (receiverAddress.equals(address)) {
-                    tx.isReceiverPreWarmed(true);
-                  }
-
-                  final DeploymentInfo deploymentInfo =
-                      this.transients.conflation().deploymentInfo();
-
-                  final int deploymentNumber = deploymentInfo.number(address);
-                  Preconditions.checkArgument(
-                      !deploymentInfo.isDeploying(address),
-                      "Deployment status during TX_INIT phase of any address should always be false");
-
-                  final boolean isAccountWarm = seenAddresses.contains(address);
-                  final AccountSnapshot preWarmingAccountSnapshot =
-                      AccountSnapshot.fromAccount(
-                          world.get(address), isAccountWarm, deploymentNumber, false);
-
-                  final AccountSnapshot postWarmingAccountSnapshot =
-                      AccountSnapshot.fromAccount(
-                          world.get(address), true, deploymentNumber, false);
-
-                  fragments.add(
-                      this.factories
-                          .accountFragment()
-                          .makeWithTrm(
-                              preWarmingAccountSnapshot, postWarmingAccountSnapshot, address));
-
-                  seenAddresses.add(address);
-
-                  List<Bytes32> keys = entry.storageKeys();
-                  for (Bytes32 k : keys) {
-                    this.state.stamps().incrementHubStamp();
-
-                    final UInt256 key = UInt256.fromBytes(k);
-                    final EWord value =
-                        Optional.ofNullable(world.get(address))
-                            .map(account -> EWord.of(account.getStorageValue(key)))
-                            .orElse(EWord.ZERO);
-
-                    fragments.add(
-                        new StorageFragment(
-                            address,
-                            deploymentInfo.number(address),
-                            EWord.of(key),
-                            value,
-                            value,
-                            value,
-                            seenKeys.computeIfAbsent(address, x -> new HashSet<>()).contains(key),
-                            true));
-
-                    seenKeys.get(address).add(key);
-                  }
-                }
-
-                this.addTraceSection(new WarmupSection(this, fragments));
-              }
-            });
-    this.transients.tx().state(TxState.TX_INIT);
+  public void traceContextReEnter(MessageFrame frame) {
+    this.defers.runReEntry(this, frame);
+    if (this.currentFrame().needsUnlatchingAtReEntry() != null) {
+      this.unlatchStack(frame, this.currentFrame().needsUnlatchingAtReEntry());
+      this.currentFrame().needsUnlatchingAtReEntry(null);
+    }
   }
 
-  /**
-   * Trace the preamble of a transaction
-   *
-   * @param world a view onto the state
-   */
-  void processStateInit(WorldView world) {
-    this.state.stamps().incrementHubStamp();
-    final TransactionStack.MetaTransaction tx = this.transients.tx();
-    final boolean isDeployment = tx.besuTx().getTo().isEmpty();
-    final Address toAddress = effectiveToAddress(tx.besuTx());
-    final DeploymentInfo deploymentInfo = this.transients.conflation().deploymentInfo();
+  @Override
+  public void traceContextExit(MessageFrame frame) {
+    if (frame.getDepth() > 0) {
+      this.transients
+          .conflation()
+          .deploymentInfo()
+          .unmarkDeploying(this.currentFrame().byteCodeAddress());
 
-    final Address fromAddress = tx.besuTx().getSender();
-    final Account fromAccount = world.get(fromAddress);
-    final AccountSnapshot preInitFromSnapshot =
-        AccountSnapshot.fromAccount(
-            fromAccount,
-            tx.isSenderPreWarmed(),
-            deploymentInfo.number(fromAddress),
-            deploymentInfo.isDeploying(fromAddress));
+      DeploymentExceptions contextExceptions =
+          DeploymentExceptions.fromFrame(this.currentFrame(), frame);
+      this.currentTraceSection().setContextExceptions(contextExceptions);
+      if (contextExceptions.any()) {
+        this.callStack.revert(this.state.stamps().hub());
+      }
 
-    final Wei transactionGasPrice =
-        ZkTracer.feeMarket
-            .getTransactionPriceCalculator()
-            .price(
-                (org.hyperledger.besu.ethereum.core.Transaction) tx.besuTx(),
-                Optional.of(this.transients.block().baseFee()));
-    final Wei value = (Wei) tx.besuTx().getValue();
-    final AccountSnapshot postInitFromSnapshot =
-        preInitFromSnapshot.debit(
-            transactionGasPrice.multiply(tx.besuTx().getGasLimit()).add(value), true);
+      this.callStack.exit();
 
-    final boolean isSelfCredit = toAddress.equals(fromAddress);
-
-    final Account toAccount = world.get(toAddress);
-
-    final AccountSnapshot preInitToSnapshot =
-        isSelfCredit
-            ? postInitFromSnapshot
-            : AccountSnapshot.fromAccount(
-                toAccount,
-                tx.isReceiverPreWarmed(),
-                deploymentInfo.number(toAddress),
-                deploymentInfo.isDeploying(toAddress));
-
-    if (isDeployment) {
-      deploymentInfo.deploy(toAddress);
+      for (Module m : this.modules) {
+        m.traceContextExit(frame);
+      }
     }
 
-    final Bytecode initBytecode = new Bytecode(tx.besuTx().getInit().orElse(Bytes.EMPTY));
-    final AccountSnapshot postInitToSnapshot =
-        isDeployment
-            ? preInitToSnapshot.deploy(value, initBytecode)
-            : preInitToSnapshot.credit(value, true);
+    // We take a snapshot before exiting the transaction
+    if (frame.getDepth() == 0) {
+      final long leftOverGas = frame.getRemainingGas();
+      final long gasRefund = frame.getGasRefund();
+      final boolean minerIsWarm = frame.isAddressWarm(txStack.current().getCoinbase());
 
-    final TransactionFragment txFragment =
-        TransactionFragment.prepare(
-            this.transients.conflation().number(),
-            this.transients.block().minerAddress(),
-            tx.besuTx(),
-            true,
-            ((org.hyperledger.besu.ethereum.core.Transaction) tx.besuTx())
-                .getEffectiveGasPrice(Optional.ofNullable(this.transients().block().baseFee())),
-            this.transients.block().baseFee(),
-            0 // TODO: find getInitialGas
-            );
-    this.defers.postTx(txFragment);
+      txStack
+          .current()
+          .setPreFinalisationValues(
+              leftOverGas,
+              gasRefund,
+              minerIsWarm,
+              this.txStack.getAccumulativeGasUsedInBlockBeforeTxStart());
+      if (this.state.getProcessingPhase() != TX_SKIP) {
+        this.state.setProcessingPhase(TX_FINAL);
+        this.defers.postTx(new TxFinalizationPostTxDefer(this, frame.getWorldUpdater()));
+      }
+    }
+  }
 
-    final AccountFragment.AccountFragmentFactory accountFragmentFactory =
-        this.factories.accountFragment();
+  public void tracePreExecution(final MessageFrame frame) {
+    Preconditions.checkArgument(
+        this.state().processingPhase != TX_SKIP,
+        "There can't be any execution if the HUB is in the a skip phase");
 
-    this.addTraceSection(
-        new TxInitSection(
-            this,
-            accountFragmentFactory.make(preInitFromSnapshot, postInitFromSnapshot),
-            accountFragmentFactory
-                .make(preInitToSnapshot, postInitToSnapshot)
-                .requiresCodeFragmentIndex(true),
-            ImcFragment.forTxInit(this),
-            ContextFragment.initializeExecutionContext(this),
-            txFragment));
+    this.processStateExec(frame);
+  }
 
-    tx.state(TxState.TX_EXEC);
+  public void tracePostExecution(MessageFrame frame, Operation.OperationResult operationResult) {
+    Preconditions.checkArgument(
+        this.state().processingPhase != TX_SKIP,
+        "There can't be any execution if the HUB is in the a skip phase");
+
+    final long gasCost = operationResult.getGasCost();
+    final TraceSection currentSection = this.state.currentTxTrace().currentSection();
+
+    final Exceptions exceptions = this.pch().exceptions();
+
+    final boolean memoryExpansionException = exceptions.memoryExpansion();
+    final boolean outOfGasException = exceptions.outOfGas();
+    final boolean unexceptional = exceptions.none();
+    final boolean exceptional = exceptions.any();
+
+    /* TODO: Might be dangerous : in some cases, we add fragments at the end of the transaction, we need an other mechanism ... */
+    // adds the final context row to reset the caller's return data
+    if (exceptional) {
+      this.currentTraceSection()
+          .addFragmentsWithoutStack(ContextFragment.executionProvidesEmptyReturnData(this));
+    }
+
+    // Setting gas cost IN MOST CASES
+    // TODO:
+    //  * complete this for CREATE's and CALL's
+    //    + are we getting the correct cost (i.e. excluding the 63/64-th's) ?
+    //  * make sure this aligns with exception handling of the zkevm
+    //  * write a method `final boolean requiresGasCost()` (huge switch case)
+    if ((!memoryExpansionException & outOfGasException) || unexceptional) {
+      currentSection.commonValues.gasCost(gasCost);
+      currentSection.commonValues.gasNext(
+          unexceptional ? currentSection.commonValues.gasActual - gasCost : 0);
+    } else {
+      currentSection.commonValues.gasCost(
+          0xdeadbeefL); // TODO: fill with correct values --- likely 0
+      currentSection.commonValues.gasNext(0);
+    }
+
+    if (this.currentFrame().opCode().isCreate() && operationResult.getHaltReason() == null) {
+      this.handleCreate(Words.toAddress(frame.getStackItem(0)));
+    }
+
+    this.defers.runPostExec(this, frame, operationResult);
+
+    if (this.previousOperationWasCallToEcPrecompile) {
+      this.ecData.getEcDataOperation().returnData(frame.getReturnData());
+    }
+
+    if (this.currentFrame().needsUnlatchingAtReEntry() == null) {
+      this.unlatchStack(frame);
+    }
+
+    switch (this.opCodeData().instructionFamily()) {
+      case ADD -> {}
+      case MOD -> {}
+      case MUL -> {}
+      case EXT -> {}
+      case WCP -> {}
+      case BIN -> {}
+      case SHF -> {}
+      case KEC -> {}
+      case CONTEXT -> {}
+      case ACCOUNT -> {}
+      case COPY -> {}
+      case TRANSACTION -> {}
+      case BATCH -> {
+        this.blockhash.tracePostOpcode(frame);
+      }
+      case STACK_RAM -> {}
+      case STORAGE -> {}
+      case JUMP -> {}
+      case MACHINE_STATE -> {}
+      case PUSH_POP -> {}
+      case DUP -> {}
+      case SWAP -> {}
+      case LOG -> {}
+      case CREATE -> {
+        this.romLex.tracePostOpcode(frame);
+      }
+      case CALL -> {}
+      case HALT -> {}
+      case INVALID -> {}
+      default -> {}
+    }
+  }
+
+  private void handleCreate(Address target) {
+    this.transients.conflation().deploymentInfo().deploy(target);
+  }
+
+  public int getCfiByMetaData(
+      final Address address, final int deploymentNumber, final boolean deploymentStatus) {
+    return this.romLex()
+        .getCodeFragmentIndexByMetadata(
+            ContractMetadata.make(address, deploymentNumber, deploymentStatus));
+  }
+
+  public int newChildContextNumber() {
+    return 1 + this.stamp();
   }
 
   public CallFrame currentFrame() {
@@ -657,16 +779,80 @@ public class Hub implements Module {
     return this.callStack.current();
   }
 
+  public int contextNumberNew(CallFrame frame) {
+    switch (this.state.getProcessingPhase()) {
+      case TX_SKIP, TX_WARM, TX_FINAL -> {
+        return 0;
+      }
+      case TX_INIT -> {
+        return newChildContextNumber();
+      }
+      case TX_EXEC -> {
+        final OpCode opCode = this.opCode();
+
+        if (pch.exceptions().any()
+            || opCode.getData().instructionFamily().equals(InstructionFamily.HALT)
+            || opCode.getData().instructionFamily().equals(InstructionFamily.INVALID)) {
+          return this.callStack.depth() == 0 ? 0 : this.callStack().caller().contextNumber();
+        }
+
+        final int currentContextNumber = this.callStack().current().contextNumber();
+
+        if (opCode.isCall()) {
+          if (pch().abortingConditions().any()) {
+            return currentContextNumber;
+          }
+
+          final Address calleeAddress =
+              Words.toAddress(this.currentFrame().frame().getStackItem(1));
+
+          AtomicInteger newContext = new AtomicInteger(currentContextNumber);
+
+          Optional.ofNullable(frame.frame().getWorldUpdater().get(calleeAddress))
+              .map(AccountState::getCode)
+              .ifPresent(
+                  byteCode -> {
+                    if (!byteCode.isEmpty()) {
+                      newContext.set(newChildContextNumber());
+                    }
+                  });
+          return newContext.get();
+        }
+
+        if (opCode.isCreate()) {
+          if (pch().abortingConditions().any() || pch().failureConditions().any()) {
+            return currentContextNumber;
+          }
+          final int initCodeSize = this.currentFrame().frame().getStackItem(2).toInt();
+          if (initCodeSize != 0) {
+            return newChildContextNumber();
+          }
+        }
+
+        return currentContextNumber;
+      }
+      default -> {
+        {
+          throw new IllegalStateException(
+              String.format("Hub can't be in the state %s", this.state.getProcessingPhase()));
+        }
+      }
+    }
+  }
+
   public MessageFrame messageFrame() {
-    return this.callStack.current().frame();
+    MessageFrame frame = this.callStack.current().frame();
+    return frame;
   }
 
   private void handleStack(MessageFrame frame) {
-    this.currentFrame().stack().processInstruction(this, frame, TAU * this.state.stamps().hub());
+    this.currentFrame()
+        .stack()
+        .processInstruction(this, frame, MULTIPLIER___STACK_HEIGHT * this.state.stamps().hub());
   }
 
   void triggerModules(MessageFrame frame) {
-    if (this.pch.exceptions().none() && this.pch.aborts().none()) {
+    if (this.pch.exceptions().none() && this.pch.abortingConditions().none()) {
       for (Module precompileLimit : this.precompileLimitModules) {
         precompileLimit.tracePreOpcode(frame);
       }
@@ -725,185 +911,28 @@ public class Hub implements Module {
     }
   }
 
-  void processStateExec(MessageFrame frame) {
-    // Note: in some cases there is no operation since ECPAIRING arguments are invalid
-    if (previousOperationWasCallToEcPrecompile && this.ecData.getOperations().size() > 0) {
-      this.ecData.getEcdDataOperation().setReturnData(frame.getReturnData());
-      previousOperationWasCallToEcPrecompile = false;
-    }
-    this.currentFrame().frame(frame);
-    this.state.stamps().incrementHubStamp();
-
-    this.pch.setup(frame);
-    this.state.stamps().stampSubmodules(this.pch());
-
-    this.handleStack(frame);
-    this.triggerModules(frame);
-    if (this.pch().exceptions().any() || this.currentFrame().opCode() == OpCode.REVERT) {
-      this.callStack.revert(this.state.stamps().hub());
-    }
-
-    if (this.currentFrame().stack().isOk()) {
-      if (this.pch.signals().ecData()) {
-        this.previousOperationWasCallToEcPrecompile = true;
-      }
-      this.traceOperation(frame);
-    } else {
-      this.addTraceSection(new StackOnlySection(this));
-      this.currentTraceSection()
-          .addFragmentsWithoutStack(this, ContextFragment.executionEmptyReturnData(this.callStack));
-    }
+  public int stamp() {
+    return this.state.stamps().hub();
   }
 
-  void processStateFinal(WorldView worldView, Transaction tx, boolean isSuccess) {
-    this.transients().tx().state(TxState.TX_FINAL);
-    this.state.stamps().incrementHubStamp();
-
-    final Address fromAddress = this.transients.tx().besuTx().getSender();
-    final Account fromAccount = worldView.get(fromAddress);
-    final DeploymentInfo deploymentInfo = this.transients.conflation().deploymentInfo();
-    final AccountSnapshot preFinalFromSnapshot =
-        AccountSnapshot.fromAccount(
-            fromAccount,
-            true,
-            deploymentInfo.number(fromAddress),
-            deploymentInfo.isDeploying(fromAddress));
-
-    // TODO: still no finished
-    final AccountSnapshot postFinalFromSnapshot =
-        AccountSnapshot.fromAccount(
-            fromAccount,
-            true,
-            deploymentInfo.number(fromAddress),
-            deploymentInfo.isDeploying(fromAddress));
-
-    Account minerAccount = worldView.get(this.transients.block().minerAddress());
-    AccountSnapshot preFinalCoinbaseSnapshot =
-        AccountSnapshot.fromAccount(
-            minerAccount,
-            true,
-            deploymentInfo.number(this.transients.block().minerAddress()),
-            deploymentInfo.isDeploying(this.transients.block().minerAddress()));
-
-    // TODO: still not finished
-    AccountSnapshot postFinalCoinbaseSnapshot =
-        AccountSnapshot.fromAccount(
-            minerAccount,
-            true,
-            deploymentInfo.number(this.transients.block().minerAddress()),
-            deploymentInfo.isDeploying(this.transients.block().minerAddress()));
-
-    final AccountFragment.AccountFragmentFactory accountFragmentFactory =
-        this.factories.accountFragment();
-
-    if (isSuccess) {
-      // if no revert: 2 account rows (sender, coinbase) + 1 tx row
-      this.addTraceSection(
-          new EndTransactionSection(
-              this,
-              accountFragmentFactory.make(preFinalFromSnapshot, postFinalFromSnapshot),
-              accountFragmentFactory.make(preFinalCoinbaseSnapshot, postFinalCoinbaseSnapshot),
-              TransactionFragment.prepare(
-                  this.transients.conflation().number(),
-                  this.transients.block().minerAddress(),
-                  tx,
-                  true,
-                  this.transients.tx().gasPrice(),
-                  this.transients.block().baseFee(),
-                  this.transients.tx().initialGas())));
-    } else {
-      // Trace the exceptions of a transaction that could not even start
-      // TODO: integrate with PCH
-      // if (this.exceptions == null) {
-      // this.exceptions = Exceptions.fromOutOfGas();
-      // }
-      // otherwise 4 account rows (sender, coinbase, sender, recipient) + 1 tx row
-      Address toAddress = this.transients.tx().besuTx().getSender();
-      Account toAccount = worldView.get(toAddress);
-      AccountSnapshot preFinalToSnapshot =
-          AccountSnapshot.fromAccount(
-              toAccount,
-              true,
-              deploymentInfo.number(toAddress),
-              deploymentInfo.isDeploying(toAddress));
-
-      // TODO: still not finished
-      AccountSnapshot postFinalToSnapshot =
-          AccountSnapshot.fromAccount(
-              toAccount,
-              true,
-              deploymentInfo.number(toAddress),
-              deploymentInfo.isDeploying(toAddress));
-      this.addTraceSection(
-          new EndTransactionSection(
-              this,
-              accountFragmentFactory.make(preFinalFromSnapshot, postFinalFromSnapshot),
-              accountFragmentFactory.make(preFinalToSnapshot, postFinalToSnapshot),
-              accountFragmentFactory.make(preFinalCoinbaseSnapshot, postFinalCoinbaseSnapshot)));
-    }
+  public OpCodeData opCodeData() {
+    return this.currentFrame().opCodeData();
   }
 
-  @Override
-  public void enterTransaction() {
-    for (Module m : this.modules) {
-      m.enterTransaction();
-    }
+  public OpCode opCode() {
+    return this.currentFrame().opCode();
   }
 
-  @Override
-  public void traceStartTx(final WorldView world, final Transaction tx) {
-    this.pch.reset();
-    this.state.enter();
-
-    this.defers.postTx(this.state.currentTxTrace());
-
-    this.txStack.enterTransaction(tx, requiresEvmExecution(world, tx));
-
-    this.enterTransaction();
-
-    if (this.transients
-        .tx()
-        .shouldSkip(world)) /* TODO: should use requiresEvmExecution instead of recomputing it */ {
-      this.transients.tx().state(TxState.TX_SKIP);
-      this.processStateSkip(world);
-    } else {
-      this.transients.tx().state(TxState.TX_WARM);
-      this.processStateWarm(world);
-      this.processStateInit(world);
-    }
-
-    for (Module m : this.modules) {
-      m.traceStartTx(world, tx);
-    }
+  TraceSection currentTraceSection() {
+    return this.state.currentTxTrace().currentSection();
   }
 
-  @Override
-  public void popTransaction() {
-    this.txStack.pop();
-    this.state.pop();
-    for (Module m : this.modules) {
-      m.popTransaction();
-    }
+  public void addFragmentsAndStack(TraceFragment... fragments) {
+    currentTraceSection().addFragmentsAndStack(this, fragments);
   }
 
-  @Override
-  public void traceEndTx(
-      WorldView world,
-      Transaction tx,
-      boolean isSuccessful,
-      Bytes output,
-      List<Log> logs,
-      long gasUsed) {
-    this.txStack.exitTransaction(this, isSuccessful);
-    if (this.transients.tx().state() != TxState.TX_SKIP) {
-      this.processStateFinal(world, tx, isSuccessful);
-    }
-
-    this.defers.runPostTx(this, world, tx, isSuccessful);
-
-    for (Module m : this.modules) {
-      m.traceEndTx(world, tx, isSuccessful, output, logs, gasUsed);
-    }
+  public void addTraceSection(TraceSection section) {
+    this.state.currentTxTrace().add(section);
   }
 
   private void unlatchStack(MessageFrame frame) {
@@ -915,7 +944,7 @@ public class Hub implements Module {
       return;
     }
 
-    StackContext pending = this.currentFrame().pending();
+    final StackContext pending = this.currentFrame().pending();
     for (int i = 0; i < pending.lines().size(); i++) {
       StackLine line = pending.lines().get(i);
 
@@ -927,307 +956,75 @@ public class Hub implements Module {
         }
 
         // This works because we are certain that the stack chunks are the first.
-        ((StackFragment) section.lines().get(i).specific())
+        ((StackFragment) section.fragments().get(i))
             .stackOps()
             .get(line.resultColumn() - 1)
             .value(result);
       }
     }
 
-    if (this.pch.exceptions().none()) {
-      for (TraceSection.TraceLine line : section.lines()) {
-        if (line.specific() instanceof StackFragment stackFragment) {
-          stackFragment.feedHashedValue(frame);
-        }
-      }
-    }
+    // TODO: this seems useless now
+    // if (this.pch.exceptions().none()) {
+    //  for (TraceSection.TraceLine line : section.fragments()) {
+    //    if (line.specific() instanceof StackFragment stackFragment) {
+    //      stackFragment.feedHashedValue(frame);
+    //    }
+    //  }
+    // }
   }
 
-  @Override
-  public void traceContextEnter(MessageFrame frame) {
-    this.pch.reset();
+  void processStateExec(MessageFrame frame) {
 
-    if (frame.getDepth() == 0) {
-      // Bedrock...
-      final TransactionStack.MetaTransaction currentTx = transients().tx();
-      final Address toAddress = effectiveToAddress(currentTx.besuTx());
-      final boolean isDeployment = this.transients.tx().besuTx().getTo().isEmpty();
+    if (previousOperationWasCallToEcPrecompile) {
+      this.ecData.getEcDataOperation().returnData(frame.getReturnData());
+      previousOperationWasCallToEcPrecompile = false;
+    }
 
-      final boolean shouldCopyTxCallData =
-          !isDeployment && !frame.getInputData().isEmpty() && currentTx.requiresEvmExecution();
-      // TODO simplify this, the same bedRock context ( = root context ??) seems to be
-      // generated in
-      // both case
-      if (shouldCopyTxCallData) {
-        this.callStack.newMantleAndBedrock(
-            this.state.stamps().hub(),
-            this.transients.tx().besuTx().getSender(),
-            toAddress,
-            CallFrameType.MANTLE,
-            new Bytecode(
-                toAddress == null
-                    ? this.transients.tx().besuTx().getData().orElse(Bytes.EMPTY)
-                    : Optional.ofNullable(frame.getWorldUpdater().get(toAddress))
-                        .map(AccountState::getCode)
-                        .orElse(Bytes.EMPTY)),
-            Wei.of(this.transients.tx().besuTx().getValue().getAsBigInteger()),
-            this.transients.tx().besuTx().getGasLimit(),
-            this.transients.tx().besuTx().getData().orElse(Bytes.EMPTY),
-            this.transients.conflation().deploymentInfo().number(toAddress),
-            toAddress.isEmpty()
-                ? 0
-                : this.transients.conflation().deploymentInfo().number(toAddress),
-            this.transients.conflation().deploymentInfo().isDeploying(toAddress));
-      } else {
-        this.callStack.newBedrock(
-            this.state.stamps().hub(),
-            // this.transients.tx().transaction().getSender(),
-            toAddress,
-            CallFrameType.BEDROCK,
-            new Bytecode(
-                toAddress == null
-                    ? this.transients.tx().besuTx().getData().orElse(Bytes.EMPTY)
-                    : Optional.ofNullable(frame.getWorldUpdater().get(toAddress))
-                        .map(AccountState::getCode)
-                        .orElse(Bytes.EMPTY)),
-            Wei.of(this.transients.tx().besuTx().getValue().getAsBigInteger()),
-            this.transients.tx().besuTx().getGasLimit(),
-            this.transients.tx().besuTx().getData().orElse(Bytes.EMPTY),
-            this.transients.conflation().deploymentInfo().number(toAddress),
-            toAddress.isEmpty()
-                ? 0
-                : this.transients.conflation().deploymentInfo().number(toAddress),
-            this.transients.conflation().deploymentInfo().isDeploying(toAddress));
+    this.currentFrame().frame(frame);
+    this.state.stamps().incrementHubStamp();
+
+    this.pch.setup(frame);
+
+    this.handleStack(frame);
+    this.triggerModules(frame);
+
+    if (this.pch().exceptions().any() || this.currentFrame().opCode() == OpCode.REVERT) {
+      this.callStack.revert(this.state.stamps().hub());
+    }
+
+    if (this.currentFrame().stack().isOk()) {
+      // TODO: this is insufficient because it neglects:
+      //  - exceptions other than stack exceptions e.g.
+      //    * STATICX
+      //    * MXPX
+      //    * OOGX
+      //  - it COULD (unlikely ?) produce issues with ABORTS
+      //  - it COULD interfere with CALL's to precompiles that don't reach EC_DATA e.g.
+      //    * ECRECOVER, ECADD, ECMUL, ECPAIRING with zero call data size parameter
+      if (this.pch.signals().ecData()) {
+        this.previousOperationWasCallToEcPrecompile = true;
       }
+      this.traceOperation(frame);
     } else {
-      // ...or CALL
-      final boolean isDeployment = frame.getType() == MessageFrame.Type.CONTRACT_CREATION;
-      final Address codeAddress = frame.getContractAddress();
-      final CallFrameType frameType =
-          frame.isStatic() ? CallFrameType.STATIC : CallFrameType.STANDARD;
-      if (isDeployment) {
-        this.transients.conflation().deploymentInfo().markDeploying(codeAddress);
-      }
-      final int codeDeploymentNumber =
-          this.transients.conflation().deploymentInfo().number(codeAddress);
 
-      final int callDataOffsetStackArgument =
-          callStack.current().opCode().callHasSixArgument() ? 2 : 3;
-
-      final long callDataOffset =
-          isDeployment
-              ? 0
-              : Words.clampedToLong(
-                  callStack.current().frame().getStackItem(callDataOffsetStackArgument));
-
-      final long callDataSize =
-          isDeployment
-              ? 0
-              : Words.clampedToLong(
-                  callStack.current().frame().getStackItem(callDataOffsetStackArgument + 1));
-
-      final long callDataContextNumber = this.callStack.current().contextNumber();
-
-      this.callStack.enter(
-          this.state.stamps().hub(),
-          frame.getRecipientAddress(),
-          frame.getContractAddress(),
-          new Bytecode(frame.getCode().getBytes()),
-          frameType,
-          frame.getValue(),
-          frame.getRemainingGas(),
-          frame.getInputData(),
-          callDataOffset,
-          callDataSize,
-          callDataContextNumber,
-          this.transients.conflation().deploymentInfo().number(codeAddress),
-          codeDeploymentNumber,
-          isDeployment);
-
-      this.defers.runNextContext(this, frame);
-
-      for (Module m : this.modules) {
-        m.traceContextEnter(frame);
-      }
+      this.addTraceSection(new StackOnlySection(this));
     }
   }
 
-  private boolean requiresEvmExecution(final WorldView worldView, final Transaction tx) {
-    Optional<? extends Address> receiver = tx.getTo();
-
-    if (receiver.isPresent()) {
-      Optional<Account> receiverInWorld = Optional.ofNullable(worldView.get(receiver.get()));
-
-      return receiverInWorld.map(AccountState::hasCode).orElse(false);
-    }
-
-    return !tx.getInit().get().isEmpty();
-  }
-
-  public void traceContextReEnter(MessageFrame frame) {
-    this.defers.runReEntry(this, frame);
-    if (this.currentFrame().needsUnlatchingAtReEntry() != null) {
-      this.unlatchStack(frame, this.currentFrame().needsUnlatchingAtReEntry());
-      this.currentFrame().needsUnlatchingAtReEntry(null);
-    }
-  }
-
-  @Override
-  public void traceContextExit(MessageFrame frame) {
-    if (frame.getDepth() > 0) {
-      this.transients
-          .conflation()
-          .deploymentInfo()
-          .unmarkDeploying(this.currentFrame().codeAddress());
-
-      DeploymentExceptions contextExceptions =
-          DeploymentExceptions.fromFrame(this.currentFrame(), frame);
-      this.currentTraceSection().setContextExceptions(contextExceptions);
-      if (contextExceptions.any()) {
-        this.callStack.revert(this.state.stamps().hub());
-      }
-
-      this.callStack.exit();
-
-      for (Module m : this.modules) {
-        m.traceContextExit(frame);
-      }
-    }
-  }
-
-  @Override
-  public void tracePreOpcode(final MessageFrame frame) {
-    if (this.transients.tx().state() == TxState.TX_SKIP) {
-      return;
-    }
-    this.processStateExec(frame);
-  }
-
-  public void tracePostExecution(MessageFrame frame, Operation.OperationResult operationResult) {
-    if (this.transients.tx().state() == TxState.TX_SKIP) {
-      return;
-    }
-
-    if (this.currentFrame().opCode().isCreate() && operationResult.getHaltReason() == null) {
-      this.handleCreate(Words.toAddress(frame.getStackItem(0)));
-    }
-
-    this.defers.runPostExec(this, frame, operationResult);
-    this.romLex.tracePostOpcode(frame);
-
-    if (this.currentFrame().needsUnlatchingAtReEntry() == null) {
-      this.unlatchStack(frame);
-    }
-
-    switch (this.opCodeData().instructionFamily()) {
-      case ADD -> {
-        if (this.pch.exceptions().noStackException()) {
-          this.add.tracePostOpcode(frame);
-        }
-      }
-      case MOD -> {
-        if (this.pch.exceptions().noStackException()) {
-          this.mod.tracePostOpcode(frame);
-        }
-      }
-      case MUL -> {
-        if (this.pch.exceptions().noStackException()) {
-          this.mul.tracePostOpcode(frame);
-        }
-      }
-      case EXT -> {
-        if (this.pch.exceptions().noStackException()) {
-          this.ext.tracePostOpcode(frame);
-        }
-      }
-      case WCP -> {
-        if (this.pch.exceptions().noStackException()) {
-          this.wcp.tracePostOpcode(frame);
-        }
-      }
-      case BIN -> {}
-      case SHF -> {
-        if (this.pch.exceptions().noStackException()) {
-          this.shf.tracePostOpcode(frame);
-        }
-      }
-      case KEC -> {}
-      case CONTEXT -> {}
-      case ACCOUNT -> {}
-      case COPY -> {}
-      case TRANSACTION -> {}
-      case BATCH -> {
-        if (this.currentFrame().opCode() == OpCode.BLOCKHASH) {
-          this.blockhash.tracePostOpcode(frame);
-        }
-      }
-      case STACK_RAM -> {
-        if (this.pch.exceptions().noStackException()) {
-          this.mxp.tracePostOpcode(frame);
-        }
-      }
-      case STORAGE -> {}
-      case JUMP -> {}
-      case MACHINE_STATE -> {}
-      case PUSH_POP -> {}
-      case DUP -> {}
-      case SWAP -> {}
-      case LOG -> {}
-      case CREATE -> {}
-      case CALL -> {}
-      case HALT -> {}
-      case INVALID -> {}
-      default -> {}
-    }
-  }
-
-  private void handleCreate(Address target) {
-    this.transients.conflation().deploymentInfo().deploy(target);
-  }
-
-  @Override
-  public void traceStartBlock(final ProcessableBlockHeader processableBlockHeader) {
-    this.transients.block().update(processableBlockHeader);
-    for (Module m : this.modules) {
-      m.traceStartBlock(processableBlockHeader);
-    }
-  }
-
-  @Override
-  public void traceEndBlock(final BlockHeader blockHeader, final BlockBody blockBody) {
-    for (Module m : this.modules) {
-      m.traceEndBlock(blockHeader, blockBody);
-    }
-  }
-
-  @Override
-  public void traceStartConflation(long blockCount) {
-    this.transients.conflation().update();
-    for (Module m : this.modules) {
-      m.traceStartConflation(blockCount);
-    }
-  }
-
-  @Override
-  public void traceEndConflation(final WorldView state) {
-    this.defers.runPostConflation(this, state);
-
-    for (Module m : this.modules) {
-      m.traceEndConflation(state);
-    }
-  }
-
-  public long refundedGas() {
-    return this.state.currentTxTrace().refundedGas();
-  }
-
+  // TODO: how do these implementations of remainingGas()
+  // and expectedGas() behave with respect to resuming
+  // execution after a CALL / CREATE ? One of them is
+  // necessarily false ...
   public long remainingGas() {
-    return 0; // TODO:
+    return this.state().getProcessingPhase() == TX_EXEC
+        ? this.currentFrame().frame().getRemainingGas()
+        : 0;
   }
 
-  @Override
-  public int lineCount() {
-    return this.state.lineCount();
+  public long expectedGas() {
+    return this.state().getProcessingPhase() == TX_EXEC
+        ? this.currentFrame().frame().getRemainingGas()
+        : 0;
   }
 
   public int cumulatedTxCount() {
@@ -1248,6 +1045,7 @@ public class Hub implements Module {
       }
       case HALT -> {
         final CallFrame parentFrame = this.callStack.parent();
+        // this.addTraceSection(new StackOnlySection(this));
 
         switch (this.opCode()) {
           case RETURN -> {
@@ -1258,7 +1056,7 @@ public class Hub implements Module {
             }
             this.currentFrame().returnDataSource(transients.op().returnDataSegment());
             this.currentFrame().returnData(returnData);
-            if (!this.pch.exceptions().any() && !this.currentFrame().underDeployment()) {
+            if (!this.pch.exceptions().any() && !this.currentFrame().isDeployment()) {
               parentFrame.latestReturnData(returnData);
             } else {
               parentFrame.latestReturnData(Bytes.EMPTY);
@@ -1269,108 +1067,139 @@ public class Hub implements Module {
             final Bytes returnData = this.transients.op().returnData();
             this.currentFrame().returnDataSource(transients.op().returnDataSegment());
             this.currentFrame().returnData(returnData);
-            if (!this.pch.exceptions().any()) {
+            if (this.pch.exceptions().none()) {
               parentFrame.latestReturnData(returnData);
             } else {
               parentFrame.latestReturnData(Bytes.EMPTY);
             }
             final ImcFragment imcFragment = ImcFragment.forOpcode(this, frame); // TODO finish it
           }
-          case STOP, SELFDESTRUCT -> parentFrame.latestReturnData(Bytes.EMPTY);
+          case STOP -> {
+            parentFrame.latestReturnData(Bytes.EMPTY);
+            StopSection.appendTo(this);
+          }
+          case SELFDESTRUCT -> {
+            parentFrame.latestReturnData(Bytes.EMPTY);
+          }
         }
-
-        this.addTraceSection(new StackOnlySection(this));
       }
-      case KEC -> this.addTraceSection(
-          new KeccakSection(
-              this, this.currentFrame(), ImcFragment.forOpcode(this, this.messageFrame())));
+
+      case KEC -> {
+        KeccakSection.appendToTrace(this);
+      }
+
       case CONTEXT -> this.addTraceSection(
-          new ContextLogSection(this, ContextFragment.readContextData(callStack)));
+          new ContextLogSection(this, ContextFragment.readCurrentContextData(this)));
+
       case LOG -> {
-        this.addTraceSection(
-            new ContextLogSection(this, ContextFragment.readContextData(callStack)));
-        LogInvocation.forOpcode(this);
+        new LogSection(this);
       }
       case ACCOUNT -> {
         TraceSection accountSection = new AccountSection(this);
-        if (this.opCodeData().stackSettings().flag1()) {
-          accountSection.addFragment(
-              this, this.currentFrame(), ContextFragment.readContextData(callStack));
+        if (this.opCode().isAnyOf(OpCode.SELFBALANCE, OpCode.CODESIZE)) {
+          accountSection.addFragment(ContextFragment.readCurrentContextData(this));
         }
 
         final Bytes rawTargetAddress =
             switch (this.currentFrame().opCode()) {
               case BALANCE, EXTCODESIZE, EXTCODEHASH -> frame.getStackItem(0);
-              default -> this.currentFrame().address();
+              default -> this.currentFrame().accountAddress();
             };
         final Address targetAddress = Words.toAddress(rawTargetAddress);
         final Account targetAccount = frame.getWorldUpdater().get(targetAddress);
-        final AccountSnapshot accountSnapshot =
+        final AccountSnapshot accountBefore =
             AccountSnapshot.fromAccount(
                 targetAccount,
                 frame.isAddressWarm(targetAddress),
                 this.transients.conflation().deploymentInfo().number(targetAddress),
                 this.transients.conflation().deploymentInfo().isDeploying(targetAddress));
+        final AccountSnapshot accountAfter =
+            AccountSnapshot.fromAccount(
+                targetAccount,
+                true,
+                this.transients.conflation().deploymentInfo().number(targetAddress),
+                this.transients.conflation().deploymentInfo().isDeploying(targetAddress));
+        final DomSubStampsSubFragment doingDomSubStamps =
+            DomSubStampsSubFragment.standardDomSubStamps(this, 0);
         accountSection.addFragment(
-            this,
-            this.currentFrame(),
             this.factories
                 .accountFragment()
-                .makeWithTrm(accountSnapshot, accountSnapshot, rawTargetAddress));
+                .makeWithTrm(accountBefore, accountAfter, rawTargetAddress, doingDomSubStamps));
+
+        if (this.currentFrame().willRevert()) {
+          final DomSubStampsSubFragment undoingDomSubStamps =
+              DomSubStampsSubFragment.revertWithCurrentDomSubStamps(this, 0);
+          accountSection.addFragment(
+              this.factories
+                  .accountFragment()
+                  .make(accountBefore, accountAfter, undoingDomSubStamps));
+        }
 
         this.addTraceSection(accountSection);
       }
       case COPY -> {
         TraceSection copySection = new CopySection(this);
-        if (this.opCodeData().stackSettings().flag1()) {
-
+        if (!this.opCode().equals(OpCode.RETURNDATACOPY)) {
           final Bytes rawTargetAddress =
               switch (this.currentFrame().opCode()) {
-                case CODECOPY -> this.currentFrame().codeAddress();
+                case CODECOPY -> this.currentFrame().byteCodeAddress();
                 case EXTCODECOPY -> frame.getStackItem(0);
-                default -> throw new IllegalStateException("unexpected opcode");
+                case CALLDATACOPY -> addressFromBytes(
+                    Bytes.fromHexString("0xdeadbeef")); // TODO: implement me please
+                default -> throw new IllegalStateException(
+                    String.format("unexpected opcode %s", this.opCode()));
               };
           final Address targetAddress = Words.toAddress(rawTargetAddress);
           final Account targetAccount = frame.getWorldUpdater().get(targetAddress);
-          AccountSnapshot accountSnapshot =
+
+          AccountSnapshot accountBefore =
               AccountSnapshot.fromAccount(
                   targetAccount,
                   frame.isAddressWarm(targetAddress),
                   this.transients.conflation().deploymentInfo().number(targetAddress),
                   this.transients.conflation().deploymentInfo().isDeploying(targetAddress));
 
+          AccountSnapshot accountAfter =
+              AccountSnapshot.fromAccount(
+                  targetAccount,
+                  true,
+                  this.transients.conflation().deploymentInfo().number(targetAddress),
+                  this.transients.conflation().deploymentInfo().isDeploying(targetAddress));
+
+          DomSubStampsSubFragment doingDomSubStamps =
+              DomSubStampsSubFragment.standardDomSubStamps(this, 0);
           copySection.addFragment(
-              this,
-              this.currentFrame(),
               this.currentFrame().opCode() == OpCode.EXTCODECOPY
                   ? this.factories
                       .accountFragment()
-                      .makeWithTrm(accountSnapshot, accountSnapshot, rawTargetAddress)
-                  : this.factories.accountFragment().make(accountSnapshot, accountSnapshot));
+                      .makeWithTrm(
+                          accountBefore, accountBefore, rawTargetAddress, doingDomSubStamps)
+                  : this.factories
+                      .accountFragment()
+                      .make(accountBefore, accountAfter, doingDomSubStamps));
+
+          if (this.callStack.current().willRevert()) {
+            DomSubStampsSubFragment undoingDomSubStamps =
+                DomSubStampsSubFragment.revertWithCurrentDomSubStamps(this, 0);
+            copySection.addFragment(
+                this.factories
+                    .accountFragment()
+                    .make(accountAfter, accountBefore, undoingDomSubStamps));
+          }
         } else {
-          copySection.addFragment(
-              this, this.currentFrame(), ContextFragment.readContextData(callStack));
+          copySection.addFragment(ContextFragment.readCurrentContextData(this));
         }
         this.addTraceSection(copySection);
       }
       case TRANSACTION -> this.addTraceSection(
-          new TransactionSection(
-              this,
-              TransactionFragment.prepare(
-                  this.transients.conflation().number(),
-                  frame.getMiningBeneficiary(),
-                  this.transients.tx().besuTx(),
-                  true,
-                  frame.getGasPrice(),
-                  frame.getBlockValues().getBaseFee().orElse(Wei.ZERO),
-                  this.transients.tx().initialGas())));
+          new TransactionSection(this, TransactionFragment.prepare(this.txStack.current())));
       case STACK_RAM -> {
         switch (this.currentFrame().opCode()) {
           case CALLDATALOAD -> {
             final ImcFragment imcFragment = ImcFragment.forOpcode(this, frame);
 
             this.addTraceSection(
-                new StackRam(this, imcFragment, ContextFragment.readContextData(callStack)));
+                new StackRam(this, imcFragment, ContextFragment.readCurrentContextData(this)));
           }
           case MLOAD, MSTORE, MSTORE8 -> this.addTraceSection(
               new StackRam(this, ImcFragment.forOpcode(this, frame)));
@@ -1378,49 +1207,18 @@ public class Hub implements Module {
         }
       }
       case STORAGE -> {
-        Address address = this.currentFrame().address();
-        EWord key = EWord.of(frame.getStackItem(0));
         switch (this.currentFrame().opCode()) {
           case SSTORE -> {
-            EWord valNext = EWord.of(frame.getStackItem(0));
-            this.addTraceSection(
-                new StorageSection(
-                    this,
-                    ContextFragment.readContextData(callStack),
-                    new StorageFragment(
-                        address,
-                        this.currentFrame().accountDeploymentNumber(),
-                        key,
-                        this.transients
-                            .tx()
-                            .storage()
-                            .getOriginalValueOrUpdate(address, key, valNext),
-                        EWord.of(frame.getTransientStorageValue(address, key)),
-                        valNext,
-                        frame.getWarmedUpStorage().contains(address, key),
-                        true)));
+            SstoreSection.appendSectionTo(this, frame.getWorldUpdater());
           }
           case SLOAD -> {
-            EWord valCurrent = EWord.of(frame.getTransientStorageValue(address, key));
-            this.addTraceSection(
-                new StorageSection(
-                    this,
-                    ContextFragment.readContextData(callStack),
-                    new StorageFragment(
-                        address,
-                        this.currentFrame().accountDeploymentNumber(),
-                        key,
-                        this.transients.tx().storage().getOriginalValueOrUpdate(address, key),
-                        valCurrent,
-                        valCurrent,
-                        frame.getWarmedUpStorage().contains(address, key),
-                        true)));
+            SloadSection.appendSectionTo(this, frame.getWorldUpdater());
           }
           default -> throw new IllegalStateException("invalid operation in family STORAGE");
         }
       }
       case CREATE -> {
-        final Address myAddress = this.currentFrame().address();
+        final Address myAddress = this.currentFrame().accountAddress();
         final Account myAccount = frame.getWorldUpdater().get(myAddress);
         AccountSnapshot myAccountSnapshot =
             AccountSnapshot.fromAccount(
@@ -1429,7 +1227,7 @@ public class Hub implements Module {
                 this.transients.conflation().deploymentInfo().number(myAddress),
                 this.transients.conflation().deploymentInfo().isDeploying(myAddress));
 
-        final Address createdAddress = AddressUtils.getCreateAddress(frame);
+        final Address createdAddress = getCreateAddress(frame);
         final Account createdAccount = frame.getWorldUpdater().get(createdAddress);
         AccountSnapshot createdAccountSnapshot =
             AccountSnapshot.fromAccount(
@@ -1445,7 +1243,7 @@ public class Hub implements Module {
       }
 
       case CALL -> {
-        final Address myAddress = this.currentFrame().address();
+        final Address myAddress = this.currentFrame().accountAddress();
         final Account myAccount = frame.getWorldUpdater().get(myAddress);
         final AccountSnapshot myAccountSnapshot =
             AccountSnapshot.fromAccount(
@@ -1473,14 +1271,14 @@ public class Hub implements Module {
           //
           // THERE IS AN EXCEPTION
           //
-          if (this.pch().exceptions().staticFault()) {
+          if (this.pch().exceptions().staticException()) {
             this.addTraceSection(
                 new FailedCallSection(
                     this,
                     ScenarioFragment.forCall(this, hasCode),
                     ImcFragment.forCall(this, myAccount, calledAccount),
-                    ContextFragment.readContextData(callStack)));
-          } else if (this.pch().exceptions().outOfMemoryExpansion()) {
+                    ContextFragment.readCurrentContextData(this)));
+          } else if (this.pch().exceptions().memoryExpansion()) {
             this.addTraceSection(
                 new FailedCallSection(
                     this,
@@ -1495,9 +1293,12 @@ public class Hub implements Module {
                     this.factories
                         .accountFragment()
                         .makeWithTrm(
-                            calledAccountSnapshot, calledAccountSnapshot, rawCalledAddress)));
+                            calledAccountSnapshot,
+                            calledAccountSnapshot,
+                            rawCalledAddress,
+                            DomSubStampsSubFragment.standardDomSubStamps(this, 0))));
           }
-        } else if (this.pch.aborts().any()) {
+        } else if (this.pch.abortingConditions().any()) {
           //
           // THERE IS AN ABORT
           //
@@ -1506,12 +1307,21 @@ public class Hub implements Module {
                   this,
                   ScenarioFragment.forCall(this, hasCode),
                   ImcFragment.forCall(this, myAccount, calledAccount),
-                  ContextFragment.readContextData(callStack),
-                  this.factories.accountFragment().make(myAccountSnapshot, myAccountSnapshot),
+                  ContextFragment.readCurrentContextData(this),
                   this.factories
                       .accountFragment()
-                      .makeWithTrm(calledAccountSnapshot, calledAccountSnapshot, rawCalledAddress),
-                  ContextFragment.nonExecutionEmptyReturnData(callStack));
+                      .make(
+                          myAccountSnapshot,
+                          myAccountSnapshot,
+                          DomSubStampsSubFragment.standardDomSubStamps(this, 0)),
+                  this.factories
+                      .accountFragment()
+                      .makeWithTrm(
+                          calledAccountSnapshot,
+                          calledAccountSnapshot,
+                          rawCalledAddress,
+                          DomSubStampsSubFragment.standardDomSubStamps(this, 1)),
+                  ContextFragment.nonExecutionEmptyReturnData(this));
           this.addTraceSection(abortedSection);
         } else {
           final ImcFragment imcFragment = ImcFragment.forOpcode(this, frame);
@@ -1558,19 +1368,24 @@ public class Hub implements Module {
       case JUMP -> {
         AccountSnapshot codeAccountSnapshot =
             AccountSnapshot.fromAccount(
-                frame.getWorldUpdater().get(this.currentFrame().codeAddress()),
+                frame.getWorldUpdater().get(this.currentFrame().byteCodeAddress()),
                 true,
                 this.transients
                     .conflation()
                     .deploymentInfo()
-                    .number(this.currentFrame().codeAddress()),
-                this.currentFrame().underDeployment());
+                    .number(this.currentFrame().byteCodeAddress()),
+                this.currentFrame().isDeployment());
 
         JumpSection jumpSection =
             new JumpSection(
                 this,
-                ContextFragment.readContextData(callStack),
-                this.factories.accountFragment().make(codeAccountSnapshot, codeAccountSnapshot),
+                ContextFragment.readCurrentContextData(this),
+                this.factories
+                    .accountFragment()
+                    .make(
+                        codeAccountSnapshot,
+                        codeAccountSnapshot,
+                        DomSubStampsSubFragment.standardDomSubStamps(this, 0)),
                 ImcFragment.forOpcode(this, frame));
 
         this.addTraceSection(jumpSection);
@@ -1580,8 +1395,11 @@ public class Hub implements Module {
     // In all cases, add a context fragment if an exception occurred
     if (this.pch().exceptions().any()) {
       this.currentTraceSection()
-          .addFragment(
-              this, this.currentFrame(), ContextFragment.executionEmptyReturnData(callStack));
+          .addFragment(ContextFragment.executionProvidesEmptyReturnData(this));
     }
+  }
+
+  public TraceSection getCurrentSection() {
+    return this.state.currentTxTrace().currentSection();
   }
 }

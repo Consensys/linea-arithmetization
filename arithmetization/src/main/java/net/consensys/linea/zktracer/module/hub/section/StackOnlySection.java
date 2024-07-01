@@ -16,13 +16,10 @@
 package net.consensys.linea.zktracer.module.hub.section;
 
 import net.consensys.linea.zktracer.module.hub.Hub;
-import net.consensys.linea.zktracer.module.hub.fragment.TraceFragment;
 
 public class StackOnlySection extends TraceSection {
-  public StackOnlySection(Hub hub, TraceFragment... chunks) {
-    this.addFragmentsAndStack(hub, chunks);
+  public StackOnlySection(Hub hub) {
+    super(hub, (short) (hub.opCode().getData().stackSettings().twoLinesInstruction() ? 2 : 1));
+    this.addStack(hub);
   }
-
-  @Override
-  public void seal(Hub hub) {}
 }

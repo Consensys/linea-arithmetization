@@ -15,64 +15,63 @@
 
 package net.consensys.linea.zktracer.module.hub.fragment.imc.call;
 
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+import lombok.Setter;
 import net.consensys.linea.zktracer.module.hub.Hub;
+import net.consensys.linea.zktracer.module.hub.State;
 import net.consensys.linea.zktracer.module.hub.Trace;
 import net.consensys.linea.zktracer.module.hub.fragment.TraceSubFragment;
-import net.consensys.linea.zktracer.opcode.OpCode;
+import net.consensys.linea.zktracer.opcode.OpCodeData;
 import net.consensys.linea.zktracer.types.EWord;
 import org.apache.tuweni.bytes.Bytes;
 
-public record MxpCall(
-    boolean mxpException,
-    int opCode,
-    boolean deploys,
-    int memorySize,
-    long gasMxp,
-    EWord offset1,
-    EWord offset2,
-    EWord size1,
-    EWord size2)
-    implements TraceSubFragment {
+@RequiredArgsConstructor
+public class MxpCall implements TraceSubFragment {
+
+  public final Hub hub;
+
+  // filled in by MXP module
+  @Getter @Setter public OpCodeData opCodeData;
+  @Getter @Setter public boolean deploys;
+  @Getter @Setter public EWord offset1 = EWord.ZERO;
+  @Getter @Setter public EWord size1 = EWord.ZERO;
+  @Getter @Setter public EWord offset2 = EWord.ZERO;
+  @Getter @Setter public EWord size2 = EWord.ZERO;
+  @Getter @Setter public boolean mayTriggerNonTrivialMmuOperation;
+  @Getter @Setter public boolean mxpx;
+  @Getter @Setter public long memorySizeInWords;
+  @Getter @Setter public long gasMxp;
+
   public static MxpCall build(Hub hub) {
-    final OpCode opCode = hub.currentFrame().opCode();
-
-    // TODO: call the MXP here
-    // TODO: get from Mxp all the following
-    // TODO: check hub mxpx == mxp mxpx
-    long gasMxp = 0;
-    EWord offset1 = EWord.ZERO;
-    EWord offset2 = EWord.ZERO;
-    EWord size1 = EWord.ZERO;
-    EWord size2 = EWord.ZERO;
-
-    return new MxpCall(
-        hub.pch().exceptions().outOfMemoryExpansion(),
-        hub.currentFrame().opCodeData().value(),
-        opCode == OpCode.RETURN && hub.currentFrame().underDeployment(),
-        hub.currentFrame().frame().memoryWordSize(),
-        gasMxp,
-        offset1,
-        offset2,
-        size1,
-        size2);
+    return new MxpCall(hub);
   }
 
-  @Override
-  public Trace trace(Trace trace) {
+  static boolean getMemoryExpansionException(Hub hub) {
+    return hub.pch().exceptions().memoryExpansion();
+  }
+
+  public final boolean type4InstructionMayTriggerNonTrivialOperation(Hub hub) {
+    return !getMemoryExpansionException(hub) && !this.size1.isZero();
+  }
+
+  public Trace trace(Trace trace, State.TxState.Stamps stamps) {
+    stamps.incrementMxpStamp();
     return trace
         .pMiscMxpFlag(true)
-        .pMiscMxpMxpx(this.mxpException)
-        .pMiscMxpInst(Bytes.ofUnsignedInt(this.opCode))
+        .pMiscMxpInst(this.opCodeData.mnemonic().byteValue())
         .pMiscMxpDeploys(this.deploys)
-        .pMiscMxpWords(Bytes.ofUnsignedLong(this.memorySize))
-        .pMiscMxpGasMxp(Bytes.ofUnsignedLong(this.gasMxp))
         .pMiscMxpOffset1Hi(this.offset1.hi())
         .pMiscMxpOffset1Lo(this.offset1.lo())
-        .pMiscMxpOffset2Hi(this.offset2.hi())
-        .pMiscMxpOffset2Lo(this.offset2.lo())
         .pMiscMxpSize1Hi(this.size1.hi())
         .pMiscMxpSize1Lo(this.size1.lo())
+        .pMiscMxpOffset2Hi(this.offset2.hi())
+        .pMiscMxpOffset2Lo(this.offset2.lo())
         .pMiscMxpSize2Hi(this.size2.hi())
-        .pMiscMxpSize2Lo(this.size2.lo());
+        .pMiscMxpSize2Lo(this.size2.lo())
+        .pMiscMxpMtntop(this.mayTriggerNonTrivialMmuOperation)
+        .pMiscMxpMxpx(this.mxpx)
+        .pMiscMxpWords(Bytes.ofUnsignedLong(this.memorySizeInWords))
+        .pMiscMxpGasMxp(Bytes.ofUnsignedLong(this.gasMxp));
   }
 }

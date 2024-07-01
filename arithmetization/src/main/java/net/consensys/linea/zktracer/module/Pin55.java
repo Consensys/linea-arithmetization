@@ -227,7 +227,7 @@ public class Pin55 {
         hub.currentFrame().id(),
         hub.currentFrame().contextNumber(),
         hub.currentFrame().type(),
-        hub.currentFrame().codeAddress().toUnprefixedHexString());
+        hub.currentFrame().byteCodeAddress().toUnprefixedHexString());
   }
 
   public void traceContextReEnter(final MessageFrame frame) {
@@ -239,7 +239,7 @@ public class Pin55 {
         hub.currentFrame().id(),
         hub.currentFrame().contextNumber(),
         hub.currentFrame().type(),
-        hub.currentFrame().codeAddress().toUnprefixedHexString());
+        hub.currentFrame().byteCodeAddress().toUnprefixedHexString());
   }
 
   public void traceContextExit(final MessageFrame frame) {
@@ -251,7 +251,7 @@ public class Pin55 {
         hub.currentFrame().id(),
         hub.currentFrame().contextNumber(),
         hub.currentFrame().type(),
-        hub.currentFrame().codeAddress().toUnprefixedHexString());
+        hub.currentFrame().byteCodeAddress().toUnprefixedHexString());
   }
 
   public void tracePreOpcode(final MessageFrame frame) {

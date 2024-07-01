@@ -19,7 +19,8 @@ import net.consensys.linea.zktracer.module.hub.Hub;
 import net.consensys.linea.zktracer.module.hub.fragment.TraceFragment;
 
 public class ExpSection extends TraceSection {
-  public ExpSection(Hub hub, TraceFragment... chunks) {
-    this.addFragmentsAndStack(hub, hub.currentFrame(), chunks);
+  public ExpSection(Hub hub, TraceFragment... fragments) {
+    super(hub);
+    this.addFragmentsAndStack(hub, fragments);
   }
 }

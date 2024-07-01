@@ -15,8 +15,6 @@
 
 package net.consensys.linea.zktracer.types;
 
-import java.util.Arrays;
-
 import lombok.Getter;
 import lombok.experimental.Accessors;
 
@@ -32,42 +30,5 @@ public class MemorySegmentSnapshot {
   private MemorySegmentSnapshot(UnsignedByte[] memory, boolean clean) {
     this.memory = memory;
     this.clean = clean;
-  }
-
-  public UnsignedByte[] limbAtIndex(final int index) {
-    UnsignedByte[] limb = UnsignedByte.EMPTY_BYTES16;
-    int limbIndex = Math.min(16 * (index + 1), memory.length) - 16 * index;
-
-    if (limbIndex >= 0) {
-      System.arraycopy(memory, 16 * index, limb, 0, limbIndex);
-    }
-
-    return limb;
-  }
-
-  public void updateLimb(int limbIndex, UnsignedByte[] valNew) {
-    if (clean) {
-      clean = false;
-      this.memory = Arrays.copyOf(memory, memory.length);
-    }
-
-    int potNewLen = (limbIndex + 1) * 16;
-    expand(potNewLen);
-
-    int copyLen = potNewLen - 1 - (limbIndex * 16);
-    System.arraycopy(valNew, 0, memory, limbIndex * 16, copyLen);
-  }
-
-  /**
-   * Should be called once per RAM macro-instruction.
-   *
-   * @param potNewLen expanded memory length
-   */
-  private void expand(int potNewLen) {
-    if (potNewLen <= memory.length) {
-      return;
-    }
-
-    this.memory = Arrays.copyOf(memory, memory.length + potNewLen);
   }
 }

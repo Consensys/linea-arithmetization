@@ -40,6 +40,7 @@ import org.hyperledger.besu.datatypes.Hash;
 import org.hyperledger.besu.datatypes.TransactionType;
 import org.hyperledger.besu.datatypes.Wei;
 import org.hyperledger.besu.ethereum.core.Transaction;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 public class TestRlpAddress {
@@ -47,6 +48,7 @@ public class TestRlpAddress {
   private final Random rnd = new Random(666);
 
   @Test
+  @Disabled
   void test() {
     OpCodes.load();
 

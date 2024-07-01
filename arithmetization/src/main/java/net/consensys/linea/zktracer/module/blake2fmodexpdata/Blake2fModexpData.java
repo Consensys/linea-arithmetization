@@ -32,9 +32,8 @@ import net.consensys.linea.zktracer.ColumnHeader;
 import net.consensys.linea.zktracer.container.stacked.set.StackedSet;
 import net.consensys.linea.zktracer.module.Module;
 import net.consensys.linea.zktracer.module.wcp.Wcp;
+import net.consensys.linea.zktracer.types.TransactionProcessingMetadata;
 import org.apache.tuweni.bytes.Bytes;
-import org.hyperledger.besu.datatypes.Transaction;
-import org.hyperledger.besu.evm.log.Log;
 import org.hyperledger.besu.evm.worldstate.WorldView;
 
 @RequiredArgsConstructor
@@ -55,13 +54,7 @@ public class Blake2fModexpData implements Module {
   }
 
   @Override
-  public void traceEndTx(
-      WorldView worldView,
-      Transaction tx,
-      boolean isSuccessful,
-      Bytes output,
-      List<Log> logs,
-      long gasUsed) {
+  public void traceEndTx(TransactionProcessingMetadata tx) {
     final List<Blake2fModexpDataOperation> newOperations =
         new ArrayList<>(this.operations.sets.getLast())
             .stream().sorted(Comparator.comparingLong(Blake2fModexpDataOperation::id)).toList();
@@ -75,7 +68,8 @@ public class Blake2fModexpData implements Module {
   }
 
   @Override
-  public void traceStartTx(WorldView worldView, Transaction tx) {
+  public void traceStartTx(
+      WorldView world, TransactionProcessingMetadata transactionProcessingMetadata) {
     this.numberOfOperationsAtStartTx = operations.size();
   }
 

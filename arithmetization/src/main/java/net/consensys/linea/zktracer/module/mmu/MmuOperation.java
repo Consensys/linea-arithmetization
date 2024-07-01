@@ -142,6 +142,10 @@ public class MmuOperation extends ModuleOperation {
   }
 
   public void setExoBytes(ExoSumDecoder exoSumDecoder) {
+    if (mmuData.mmuCall().exoBytes().isPresent()) {
+      mmuData.exoBytes(mmuData.mmuCall().exoBytes().get());
+      return;
+    }
     final int exoSum = mmuData.hubToMmuValues().exoSum();
 
     if (exoSum != 0) {
